@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "FrameWork.h"
 
@@ -8,10 +8,10 @@ namespace OriGine {
 class SceneManager;
 }
 
-class __APP_NAME__Editor : public FrameWork {
+class LogGuideGame : public FrameWork {
 public:
-    __APP_NAME__Editor();
-    ~__APP_NAME__Editor() override;
+    LogGuideGame();
+    ~LogGuideGame() override;
 
     void Initialize(const std::vector<std::string>& _commandLines) override;
     void Finalize() override;

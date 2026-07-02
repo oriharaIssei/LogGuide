@@ -1,4 +1,4 @@
-# Application-Template
+﻿# Application-Template
 
 OriGine Engine を使用したアプリケーションプロジェクトの雛形です。
 Engine を submodule として取り込み、最小構成の FrameWork / main.cpp / premake 設定を提供します。
@@ -23,8 +23,8 @@ Application-Template/
         ├── code/
         │   ├── main.cpp
         │   ├── FrameWork.{h,cpp}
-        │   ├── __APP_NAME__Editor.{h,cpp}
-        │   ├── __APP_NAME__Game.{h,cpp}
+        │   ├── LogGuideEditor.{h,cpp}
+        │   ├── LogGuideGame.{h,cpp}
         │   ├── component/ComponentTemplate.txt
         │   ├── system/SystemTemplate.txt
         │   └── manager/
@@ -32,7 +32,7 @@ Application-Template/
         # cookedResource/ は AssetCooker による成果物のためローカル生成 (gitignore)
 ```
 
-`__APP_NAME__` は `setup.ps1` 実行時にプロジェクト名に置換されます。
+`LogGuide` は `setup.ps1` 実行時にプロジェクト名に置換されます。
 
 ---
 
@@ -55,7 +55,7 @@ cd MyGame
 ```
 
 `setup.ps1` は次を行います:
-1. `__APP_NAME__` をファイル内容・ファイル名の両方で `MyGame` に置換
+1. `LogGuide` をファイル内容・ファイル名の両方で `MyGame` に置換
 2. Engine を `project/engine` に git submodule として追加
 3. `premake.ps1` を実行して Visual Studio ソリューションを生成
 

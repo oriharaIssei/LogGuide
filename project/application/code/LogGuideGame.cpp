@@ -1,4 +1,4 @@
-#include "__APP_NAME__Game.h"
+﻿#include "LogGuideGame.h"
 
 #define ENGINE_INCLUDE
 #define RESOURCE_DIRECTORY
@@ -10,10 +10,10 @@
 
 using namespace OriGine;
 
-__APP_NAME__Game::__APP_NAME__Game()  = default;
-__APP_NAME__Game::~__APP_NAME__Game() = default;
+LogGuideGame::LogGuideGame()  = default;
+LogGuideGame::~LogGuideGame() = default;
 
-void __APP_NAME__Game::Initialize(const std::vector<std::string>& _commandLines) {
+void LogGuideGame::Initialize(const std::vector<std::string>& _commandLines) {
     variables_    = GlobalVariables::GetInstance();
     engine_       = Engine::GetInstance();
     sceneManager_ = std::make_unique<SceneManager>();
@@ -29,12 +29,12 @@ void __APP_NAME__Game::Initialize(const std::vector<std::string>& _commandLines)
     ApplyWindowSettings();
 }
 
-void __APP_NAME__Game::Finalize() {
+void LogGuideGame::Finalize() {
     sceneManager_.reset();
     engine_->Finalize();
 }
 
-void __APP_NAME__Game::Run() {
+void LogGuideGame::Run() {
     while (!isEndRequest_) {
         if (engine_->ProcessMessage()) {
             isEndRequest_ = true;

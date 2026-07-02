@@ -1,4 +1,4 @@
-#include "__APP_NAME__Editor.h"
+﻿#include "LogGuideEditor.h"
 
 #ifdef _DEBUG
 #define ENGINE_INCLUDE
@@ -15,10 +15,10 @@
 
 using namespace OriGine;
 
-__APP_NAME__Editor::__APP_NAME__Editor()  = default;
-__APP_NAME__Editor::~__APP_NAME__Editor() = default;
+LogGuideEditor::LogGuideEditor()  = default;
+LogGuideEditor::~LogGuideEditor() = default;
 
-void __APP_NAME__Editor::Initialize(const std::vector<std::string>& _commandLines) {
+void LogGuideEditor::Initialize(const std::vector<std::string>& _commandLines) {
     variables_    = GlobalVariables::GetInstance();
     engine_       = Engine::GetInstance();
     sceneManager_ = std::make_unique<SceneManager>();
@@ -38,13 +38,13 @@ void __APP_NAME__Editor::Initialize(const std::vector<std::string>& _commandLine
     EditorController::GetInstance()->Initialize();
 }
 
-void __APP_NAME__Editor::Finalize() {
+void LogGuideEditor::Finalize() {
     EditorController::GetInstance()->Finalize();
     sceneManager_.reset();
     engine_->Finalize();
 }
 
-void __APP_NAME__Editor::Run() {
+void LogGuideEditor::Run() {
     while (!isEndRequest_) {
         if (engine_->ProcessMessage()) {
             isEndRequest_ = true;
