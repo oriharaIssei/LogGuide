@@ -1,6 +1,10 @@
 # Build artifacts
 /generated/
 
+# 録画出力 (RecordingSystem のセッション出力)
+/recordings/
+/project/recordings/
+
 # AssetCooker 成果物 (resource/ から生成されるのでローカル管理)
 /project/application/cookedResource/
 /project/*.sln
@@ -29,3 +33,4 @@ Thumbs.db
 
 # Premake (engine submodule 側にあるのでローカルに置かれた場合のみ)
 /project/config/premake5.exe
+project/imgui.ini
