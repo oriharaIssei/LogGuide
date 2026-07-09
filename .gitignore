@@ -7,6 +7,14 @@
 
 # AssetCooker 成果物 (resource/ から生成されるのでローカル管理)
 /project/application/cookedResource/
+
+# whisper.cpp / llama.cpp ビルド成果物 (各自 scripts/build_*_cuda.bat でビルド)
+/project/application/externals/whisper.cpp/build_cuda*/
+/project/application/externals/llama.cpp/build_cuda*/
+
+# AI モデル (サイズが大きいのでローカル管理)
+/project/application/resource/whisper/*.bin
+/project/application/resource/llm/models/
 /project/*.sln
 /project/*.slnx
 /project/*.vcxproj
@@ -34,3 +42,4 @@ Thumbs.db
 # Premake (engine submodule 側にあるのでローカルに置かれた場合のみ)
 /project/config/premake5.exe
 project/imgui.ini
+/project/application/externals

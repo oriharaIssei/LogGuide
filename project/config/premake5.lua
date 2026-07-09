@@ -36,6 +36,9 @@ project "LogGuide"
     objdir "../generated/obj/%{cfg.buildcfg}/LogGuide/"
     debugdir "%{wks.location}"
     files { "application/**.h", "application/**.cpp" }
+    -- whisper.cpp / llama.cpp のソースはアプリのビルド対象に含めない
+    -- (CMake で別途 CUDA 付きビルド済みの .lib をリンクする)
+    removefiles { "application/externals/**" }
 
     clangtidy "On"
 
@@ -43,15 +46,44 @@ project "LogGuide"
         {
             "$(ProjectDir)code",
             "$(ProjectDir)",
+            "$(SolutionDir)application/externals/whisper.cpp/include",
+            "$(SolutionDir)application/externals/whisper.cpp/ggml/include",
+            "$(SolutionDir)application/externals/llama.cpp/include",
+            "$(SolutionDir)application/externals/llama.cpp/ggml/include",
         },
         getEngineIncludeDirs()
     ))
 
     dependson { "DirectXTex", "imgui" }
+    -- CUDA ランタイム (whisper.cpp / llama.cpp を CUDA 付きでビルドしているため)
+    libdirs { "$(CUDA_PATH)/lib/x64" }
     links(table.join(
-        { "OriGine" },
+        { "OriGine",
+          "whisper", "llama", "ggml", "ggml-base", "ggml-cpu", "ggml-cuda",
+          "cudart_static", "cublas", "cublasLt", "cuda" },
         getEngineLinks()
     ))
+
+    -- whisper.cpp / llama.cpp の CUDA 付きビルド成果物 (.lib)
+    filter "configurations:Debug"
+        libdirs {
+            "application/externals/whisper.cpp/build_cuda_debug/src",
+            "application/externals/whisper.cpp/build_cuda_debug/ggml/src",
+            "application/externals/whisper.cpp/build_cuda_debug/ggml/src/ggml-cuda",
+            "application/externals/llama.cpp/build_cuda_debug/src",
+            "application/externals/llama.cpp/build_cuda_debug/ggml/src",
+            "application/externals/llama.cpp/build_cuda_debug/ggml/src/ggml-cuda",
+        }
+    filter "configurations:Develop or Release"
+        libdirs {
+            "application/externals/whisper.cpp/build_cuda_release/src",
+            "application/externals/whisper.cpp/build_cuda_release/ggml/src",
+            "application/externals/whisper.cpp/build_cuda_release/ggml/src/ggml-cuda",
+            "application/externals/llama.cpp/build_cuda_release/src",
+            "application/externals/llama.cpp/build_cuda_release/ggml/src",
+            "application/externals/llama.cpp/build_cuda_release/ggml/src/ggml-cuda",
+        }
+    filter {}
 
     warnings "Extra"
     multiprocessorcompile "On"

@@ -3,6 +3,7 @@
 #ifdef _DEBUG
 
 /// module
+#include "analysis/TimelineJsonlReader.h"
 #include "player/DualPlayerController.h"
 #include "player/FileDialog.h"
 #include "player/VideoTexture.h"
@@ -60,6 +61,75 @@ void HandleIncomingFile(DualPlayerController& player, const std::string& path) {
         player.OpenSession(path);
     } else {
         player.OpenSlot(NextSlot(player), path);
+    }
+}
+
+// イベント種別/タグごとの色。シークバーのマーカーとリストで共通に使う。
+ImU32 EventColor(const TimelineEntry& e) {
+    if (e.type == "speech") {
+        if (e.tag == "confusion")   return IM_COL32(255, 200,  40, 255); // 黄: 迷い
+        if (e.tag == "frustration") return IM_COL32(235,  70,  60, 255); // 赤: 不満
+        if (e.tag == "delight")     return IM_COL32( 70, 200, 120, 255); // 緑: 喜び
+        if (e.tag == "surprise")    return IM_COL32( 90, 160, 255, 255); // 青: 驚き
+        return IM_COL32(180, 180, 180, 255);                             // 灰: 分類なし発話
+    }
+    if (e.type == "silence_start" || e.type == "silence_end")
+        return IM_COL32(120, 120, 140, 255); // 無発話区間
+    if (e.type == "volume_spike")
+        return IM_COL32(230, 130, 230, 255); // 紫: 音量スパイク
+    if (e.type == "speech_density")
+        return IM_COL32(255, 150,  60, 255); // 橙: 発話密度
+    if (e.type == "degradation")
+        return IM_COL32(120,  80,  40, 255); // 茶: 縮退
+    return IM_COL32(200, 200, 200, 255);
+}
+
+// イベント 1 件の 1 行ラベル（リスト表示用）。
+std::string EventLabel(const TimelineEntry& e) {
+    const int totalSec = static_cast<int>(e.timeMs / 1000);
+    char ts[16] = {};
+    std::snprintf(ts, sizeof(ts), "%d:%02d", totalSec / 60, totalSec % 60);
+
+    std::string body;
+    if (e.type == "speech") {
+        body = (e.tag.empty() ? "" : "[" + e.tag + "] ") + e.text;
+    } else if (e.type == "silence_start") {
+        body = "(無発話 開始)";
+    } else if (e.type == "silence_end") {
+        body = "(無発話 終了 " + std::to_string(e.durationMs / 1000) + "s)";
+    } else if (e.type == "volume_spike") {
+        body = "♪ " + (e.label.empty() ? std::string("音量スパイク") : e.label);
+    } else if (e.type == "speech_density") {
+        body = "(発話密度 急増)";
+    } else if (e.type == "degradation") {
+        body = "⚠ 解析縮退";
+    } else if (e.type == "summary") {
+        body = "[要約] " + e.text;
+    } else {
+        body = e.type;
+    }
+    return std::string(ts) + "  " + body;
+}
+
+// シークバー矩形の上にイベントマーカー（tag 別色分け）を重ねて描く。
+void DrawTimelineMarkers(const ImVec2& barMin, const ImVec2& barMax,
+                         const TimelineData& timeline, double durationSec) {
+    if (timeline.Empty() || durationSec <= 0.0) {
+        return;
+    }
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float width = barMax.x - barMin.x;
+    for (const auto& e : timeline.entries) {
+        if (e.type == "meta" || e.type == "summary") {
+            continue;
+        }
+        const double t = static_cast<double>(e.timeMs) / 1000.0;
+        const float frac = static_cast<float>(t / durationSec);
+        if (frac < 0.0f || frac > 1.0f) {
+            continue;
+        }
+        const float x = barMin.x + frac * width;
+        dl->AddLine(ImVec2(x, barMin.y), ImVec2(x, barMax.y), EventColor(e), 2.0f);
     }
 }
 
@@ -171,6 +241,44 @@ void DrawPlayerPanel(DualPlayerController& player, WindowFileDrop& drop, HWND ow
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::SliderFloat("##timeline", &t, 0.0f, static_cast<float>(duration > 0.0 ? duration : 1.0), "%.2f s")) {
         player.SeekMaster(static_cast<double>(t));
+    }
+    // シークバー矩形の上に AI 解析イベントマーカーを重ねる。
+    const ImVec2 barMin = ImGui::GetItemRectMin();
+    const ImVec2 barMax = ImGui::GetItemRectMax();
+    if (player.HasTimeline()) {
+        DrawTimelineMarkers(barMin, barMax, player.GetTimeline(), duration);
+    }
+
+    // --- AI 解析タイムライン（イベントリスト / 要約） ---
+    if (player.HasTimeline()) {
+        const TimelineData& tl = player.GetTimeline();
+        ImGui::SeparatorText("AI Analysis Timeline");
+
+        if (!tl.summary.empty()) {
+            if (ImGui::CollapsingHeader("Session Summary", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextWrapped("%s", tl.summary.c_str());
+            }
+        }
+
+        ImGui::Text("%zu events", tl.entries.size());
+        if (ImGui::BeginChild("##events", ImVec2(0, 200), true)) {
+            for (size_t i = 0; i < tl.entries.size(); ++i) {
+                const TimelineEntry& e = tl.entries[i];
+                if (e.type == "meta") {
+                    continue;
+                }
+                ImGui::PushID(static_cast<int>(i));
+                ImGui::PushStyleColor(ImGuiCol_Text, EventColor(e));
+                const std::string label = EventLabel(e);
+                // クリックで該当時刻へジャンプ。
+                if (ImGui::Selectable(label.c_str())) {
+                    player.SeekMaster(static_cast<double>(e.timeMs) / 1000.0);
+                }
+                ImGui::PopStyleColor();
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndChild();
     }
 
     ImGui::End();

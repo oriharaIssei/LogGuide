@@ -75,11 +75,25 @@ bool DualPlayerController::OpenSlot(int slot, const std::string& mp4Path) {
         s.label = fs::path(mp4Path).filename().string();
     }
     s.player->SetLoop(false);
+
+    // 同名の .jsonl（AI 解析タイムライン）があれば読み込む。
+    LoadTimelineFor(mp4Path);
     return true;
+}
+
+void DualPlayerController::LoadTimelineFor(const std::string& mediaPath) {
+    const std::string sidecar = TimelineJsonlReader::SidecarPathFor(mediaPath);
+    TimelineData loaded = TimelineJsonlReader::LoadFromFile(sidecar);
+    if (!loaded.Empty()) {
+        timeline_ = std::move(loaded);
+        LOG_INFO("DualPlayerController: loaded timeline '{}' ({} events)",
+                 sidecar, timeline_.entries.size());
+    }
 }
 
 bool DualPlayerController::OpenSession(const std::string& sessionJsonPath) {
     lastError_.clear();
+    timeline_ = {}; // セッションを開き直すので前のタイムラインを破棄する。
 
     SessionInfo session;
     std::string err;

@@ -8,6 +8,7 @@
 #include <vector>
 
 /// module
+#include "analysis/TimelineJsonlReader.h"
 #include "player/VideoTexture.h"
 
 namespace OriGine {
@@ -82,6 +83,11 @@ public:
     SlotView               GetSlotView(int slot) const;
     const std::string&     GetLastError() const { return lastError_; }
 
+    // ---- AI 解析タイムライン ----
+    // 開いた動画/セッションに対応する .jsonl があれば読み込まれている。
+    const TimelineData& GetTimeline() const { return timeline_; }
+    bool                HasTimeline() const { return !timeline_.Empty(); }
+
 private:
     struct Slot {
         std::unique_ptr<OriGine::Mp4Player> player;
@@ -95,9 +101,13 @@ private:
     int  MasterSlot() const;
     bool AnyLoaded() const;
 
+    // media パス（例 screen.mp4）の隣に .jsonl があれば timeline_ へ読み込む。
+    void LoadTimelineFor(const std::string& mediaPath);
+
     std::array<Slot, kSlotCount> slots_;
     bool                         mfInitialized_ = false;
     std::string                  lastError_;
+    TimelineData                 timeline_;
 };
 
 } // namespace LogGuide

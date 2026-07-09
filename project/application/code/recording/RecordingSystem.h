@@ -21,6 +21,8 @@ class ScreenRecorder;
 
 namespace LogGuide {
 
+class AudioAnalysisPipeline;
+
 // =============================================================================
 // RecordingSystem
 //
@@ -84,9 +86,19 @@ public:
     const SessionInfo& LastSession() const { return lastSession_; }
     bool               HasLastSession() const { return !lastSession_.sessionId.empty(); }
 
+    // AI 解析パイプライン（文字起こし・イベント検出）。UI が状態を参照するために公開する。
+    AudioAnalysisPipeline*       Analysis() { return analysis_.get(); }
+    const AudioAnalysisPipeline* Analysis() const { return analysis_.get(); }
+    // 直近 Initialize で無効化された解析機能の理由（モデル欠落など）。UI 表示用。
+    const std::vector<std::string>& AnalysisWarnings() const { return analysisWarnings_; }
+
 private:
     // 失敗時に開いたデバイス/レコーダをすべて閉じる（session.json は書かない）。
     void TeardownCaptures();
+    // 解析パイプラインを起動し、アクティブな音声源のタップを結線する。
+    void StartAnalysis();
+    // タップを外し、解析を停止する（終了後バッチ解析・要約を含む）。
+    void StopAnalysis();
     // camera.mp4 の録画を開始し、track を outTracks に追加する。
     bool StartCameraTrack(const SessionInfo& session, std::vector<TrackInfo>& outTracks);
     // screen.mp4 の録画を開始し、track を outTracks に追加する。
@@ -100,6 +112,9 @@ private:
     std::unique_ptr<OriGine::SystemAudioCapture> systemAudio_;
     std::unique_ptr<OriGine::MediaRecorder>      cameraRecorder_;
     std::unique_ptr<OriGine::ScreenRecorder>     screenRecorder_;
+
+    std::unique_ptr<AudioAnalysisPipeline>       analysis_;
+    std::vector<std::string>                     analysisWarnings_;
 
     RecordingSettings settings_;
     SessionInfo       session_;     // 録画中の作業用

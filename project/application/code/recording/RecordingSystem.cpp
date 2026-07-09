@@ -1,6 +1,8 @@
 #include "recording/RecordingSystem.h"
 
 /// module
+#include "analysis/AnalysisConfig.h"
+#include "analysis/AudioAnalysisPipeline.h"
 #include "recording/SessionManifest.h"
 
 /// engine
@@ -83,6 +85,19 @@ void RecordingSystem::Initialize(OriGine::Engine* engine) {
     cameraRecorder_ = std::make_unique<OriGine::MediaRecorder>();
     screenRecorder_ = std::make_unique<OriGine::ScreenRecorder>();
 
+    // AI 解析パイプライン: logguide.toml を読み、モデルをロードする。
+    // モデル欠落・LLM 未設定でも、信号レベル検出のみで動作させる（段階的縮退）。
+    analysisWarnings_.clear();
+    AnalysisConfig analysisConfig = AnalysisConfig::LoadFromFile("logguide.toml", nullptr);
+    analysis_ = std::make_unique<AudioAnalysisPipeline>();
+    if (!analysis_->Initialize(analysisConfig, &analysisWarnings_)) {
+        // 解析全体が無効（analysis.enabled=false）。パイプラインは保持するが Start しない。
+        LOG_INFO("RecordingSystem: audio analysis disabled");
+    }
+    for (const auto& w : analysisWarnings_) {
+        LOG_WARN("RecordingSystem: analysis: {}", w);
+    }
+
     RefreshDevices();
 }
 
@@ -90,6 +105,7 @@ void RecordingSystem::Finalize() {
     if (state_ == State::Recording) {
         StopRecording();
     }
+    analysis_.reset();
     cameraRecorder_.reset();
     screenRecorder_.reset();
     camera_.reset();
@@ -286,8 +302,64 @@ bool RecordingSystem::StartRecording() {
     startClock_    = std::chrono::steady_clock::now();
     state_         = State::Recording;
 
+    StartAnalysis();
+
     LOG_INFO("RecordingSystem: started session '{}' ({} track(s))", session_.sessionId, session_.tracks.size());
     return true;
+}
+
+void RecordingSystem::StartAnalysis() {
+    if (!analysis_) {
+        return;
+    }
+
+    // タイムライン JSONL は主動画（screen 優先、無ければ camera）と同名・同ディレクトリに置く。
+    // 例: <session>/screen.mp4 -> <session>/screen.jsonl
+    std::string sourceVideo = "screen.mp4";
+    if (!settings_.recordScreenTrack && settings_.recordCameraTrack) {
+        sourceVideo = "camera.mp4";
+    }
+    const std::string jsonlPath =
+        (fs::path(session_.directory) / (fs::path(sourceVideo).stem().string() + ".jsonl")).string();
+
+    if (!analysis_->Start(jsonlPath, sourceVideo)) {
+        LOG_WARN("RecordingSystem: failed to start audio analysis (continuing recording only)");
+        return;
+    }
+
+    // マイク（テスターの発話）を優先して解析へ分岐する。マイク無効ならシステム音声を使う。
+    auto onAudio = [this](const float* data, uint32_t frameCount, uint32_t channels) {
+        // Microphone/SystemAudioCapture のサンプルレートは mixFormat 依存。
+        // ここでは各キャプチャの GetFormat から実レートを渡す。
+        if (analysis_) {
+            const uint32_t rate = (settings_.recordMic && microphone_)
+                                      ? microphone_->GetFormat().sampleRate
+                                      : (systemAudio_ ? systemAudio_->GetFormat().sampleRate : 48000);
+            analysis_->OnAudio(data, frameCount, channels, rate);
+        }
+    };
+
+    if (settings_.recordMic && microphone_) {
+        microphone_->SetTapCallback(onAudio);
+    } else if (settings_.recordSystemAudio && systemAudio_) {
+        systemAudio_->SetTapCallback(onAudio);
+    } else {
+        LOG_WARN("RecordingSystem: no audio source for analysis; signal/transcription will be idle");
+    }
+}
+
+void RecordingSystem::StopAnalysis() {
+    // まずタップを外し、これ以上 OnAudio が来ないようにする。
+    if (microphone_) {
+        microphone_->SetTapCallback(nullptr);
+    }
+    if (systemAudio_) {
+        systemAudio_->SetTapCallback(nullptr);
+    }
+    // Stop はワーカー join + 終了後バッチ解析 + 要約を行う（時間がかかりうる）。
+    if (analysis_) {
+        analysis_->Stop();
+    }
 }
 
 void RecordingSystem::TeardownCaptures() {
@@ -313,6 +385,9 @@ void RecordingSystem::StopRecording() {
     const double elapsed = GetElapsedSeconds();
 
     TeardownCaptures();
+
+    // 解析を停止する（録音停止後に GPU が空くので、退避音声のバッチ解析と要約もここで走る）。
+    StopAnalysis();
 
     const std::tm lt         = LocalNow();
     session_.endedAtIso      = ToIso8601(lt);
