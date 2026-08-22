@@ -1,13 +1,13 @@
-#include "player/PlayerPanel.h"
+#include "playback/PlayerPanel.h"
 
 #ifdef _DEBUG
 
 /// module
-#include "analysis/AudioAnalysisPipeline.h"
+#include "analysis/SummaryService.h"
 #include "analysis/TimelineJsonlReader.h"
-#include "player/DualPlayerController.h"
-#include "player/FileDialog.h"
-#include "player/VideoTexture.h"
+#include "playback/DualPlayerController.h"
+#include "playback/FileDialog.h"
+#include "playback/VideoTexture.h"
 
 /// externals
 #include <imgui/imgui.h>
@@ -306,7 +306,7 @@ void DrawVideo(const DualPlayerController::SlotView& view, float maxWidth) {
 } // namespace
 
 void DrawPlayerPanel(DualPlayerController& player, WindowFileDrop& drop, HWND owner,
-                     AudioAnalysisPipeline* analysis) {
+                     SummaryService* summary) {
     // マーカーのフィルタ状態はパネルをまたいで保持する（ビューアのセッション設定）。
     static TimelineFilter filter;
 
@@ -418,21 +418,22 @@ void DrawPlayerPanel(DualPlayerController& player, WindowFileDrop& drop, HWND ow
         ImGui::SeparatorText("AI Analysis Timeline");
 
         // 要約を生成ボタン: 開いているタイムライン(.jsonl)に対して on-demand で要約を実行する。
-        if (analysis != nullptr && !player.GetTimelinePath().empty()) {
-            const bool summarizing = analysis->IsSummarizing();
+        if (summary != nullptr && !player.GetTimelinePath().empty()) {
+            const bool summarizing = summary->IsSummarizing();
             if (summarizing) {
                 ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "要約生成中...");
                 // 生成完了を検知したらタイムラインを読み直して summary を反映する。
                 // （IsSummarizing が false に落ちた次フレームで ReloadTimeline される）
             } else {
-                ImGui::BeginDisabled(!analysis->CanSummarize());
+                ImGui::BeginDisabled(!summary->CanSummarize());
                 if (ImGui::Button(tl.summary.empty() ? "要約を生成" : "要約を再生成")) {
-                    analysis->SummarizeExisting(player.GetTimelinePath());
+                    summary->SummarizeExisting(player.GetTimelinePath());
                 }
                 ImGui::EndDisabled();
-                if (!analysis->CanSummarize()) {
+                if (!summary->CanSummarize()) {
                     ImGui::SameLine();
-                    ImGui::TextDisabled("(summarize モデル無効 / 録画中)");
+                    // 再生アプリに録画は無いので、無効化の理由は summarize モデルのみ。
+                    ImGui::TextDisabled("(summarize モデル無効)");
                 }
             }
             // 直前フレームが要約中で、今フレーム完了していたらリロード。
@@ -505,8 +506,8 @@ void DrawPlayerPanel(DualPlayerController& player, WindowFileDrop& drop, HWND ow
 namespace LogGuide {
 class DualPlayerController;
 class WindowFileDrop;
-class AudioAnalysisPipeline;
-void DrawPlayerPanel(DualPlayerController&, WindowFileDrop&, HWND, AudioAnalysisPipeline*) {}
+class SummaryService;
+void DrawPlayerPanel(DualPlayerController&, WindowFileDrop&, HWND, SummaryService*) {}
 } // namespace LogGuide
 
 #endif // _DEBUG

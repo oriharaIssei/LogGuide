@@ -21,18 +21,50 @@ Application-Template/
     │   └── premake.lua.example   # Engine 側に用意すべき premake.lua の参考
     └── application/
         ├── code/
-        │   ├── main.cpp
-        │   ├── FrameWork.{h,cpp}
-        │   ├── LogGuideEditor.{h,cpp}
-        │   ├── LogGuideGame.{h,cpp}
-        │   ├── component/ComponentTemplate.txt
-        │   ├── system/SystemTemplate.txt
-        │   └── manager/
-        └── resource/
+        │   ├── shared/          # LogGuideCore (StaticLib) — 両アプリが共有
+        │   │   ├── FrameWork.{h,cpp}
+        │   │   ├── analysis/    # AnalysisConfig, TimelineEvent, TimelineJsonl{Reader,Writer},
+        │   │   │                #  LocalLLM, SessionSummarizer
+        │   │   ├── component/ComponentTemplate.txt
+        │   │   ├── system/SystemTemplate.txt
+        │   │   └── manager/
+        │   ├── recorder/        # LogGuideRecorder.exe — 録画アプリ
+        │   │   ├── main.cpp
+        │   │   ├── RecorderApp.{h,cpp}
+        │   │   ├── recording/   # RecordingSystem, RecordingPanel, SessionManifest
+        │   │   └── analysis/    # AudioAnalysisPipeline, VideoAnalysisPipeline,
+        │   │                    #  WhisperTranscriber, CrossModalCorrelator ほか
+        │   └── player/          # LogGuidePlayer.exe — 再生アプリ
+        │       ├── main.cpp
+        │       ├── PlayerApp.{h,cpp}
+        │       ├── playback/    # DualPlayerController, PlayerPanel, VideoTexture, FileDialog
+        │       └── analysis/    # SummaryService
+        ├── externals/           # whisper.cpp / llama.cpp (CUDA 付きで別途 CMake ビルド)
+        └── resource/            # whisper / llm モデル, GlobalVariables
         # cookedResource/ は AssetCooker による成果物のためローカル生成 (gitignore)
 ```
 
-`LogGuide` は `setup.ps1` 実行時にプロジェクト名に置換されます。
+---
+
+## アプリケーション構成
+
+LogGuide は **録画** と **再生** の 2 つの独立した実行ファイルに分かれています。
+
+| プロジェクト       | 種別        | 役割                                                           | 外部依存                 |
+| ------------------ | ----------- | -------------------------------------------------------------- | ------------------------ |
+| `LogGuideCore`     | StaticLib   | 両アプリ共有 (FrameWork / タイムライン JSONL / LocalLLM)        | llama.cpp                |
+| `LogGuideRecorder` | WindowedApp | 画面・カメラ・音声のキャプチャと録画中のリアルタイム AI 解析    | whisper.cpp + llama.cpp  |
+| `LogGuidePlayer`   | WindowedApp | camera.mp4 / screen.mp4 の同期再生とタイムライン閲覧・要約生成  | llama.cpp                |
+
+再生アプリは文字起こしを行わないため whisper.cpp をリンクしません。
+「要約を生成」だけは `SummaryService` (LocalLLM) が担当します。
+
+両アプリの作業ディレクトリは `project/` で共通のため、ImGui のウィンドウ配置は
+`imgui_recorder.ini` / `imgui_player.ini` に分けています。
+
+> UI (ImGui / EditorController) はエンジン側が `_DEBUG` 限定のため、
+> パネルが表示されるのは **Debug 構成のみ**です。Develop / Release でも
+> ビルドとリンクは通ります。
 
 ---
 
@@ -61,7 +93,11 @@ cd MyGame
 
 ### 3. ビルド
 
-`project/MyGame.sln` を Visual Studio で開き、`Debug` / `Develop` / `Release` のいずれかをビルド。
+`project/LogGuide.slnx` を Visual Studio で開き、`Debug` / `Develop` / `Release` のいずれかをビルド。
+
+スタートアッププロジェクトの既定は `LogGuideRecorder` です。再生アプリを起動する場合は
+ソリューションエクスプローラで `LogGuidePlayer` をスタートアップに設定してください。
+どちらの exe も `generated/output/<構成>/` に出力されます。
 
 ---
 

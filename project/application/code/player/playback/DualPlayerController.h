@@ -9,7 +9,7 @@
 
 /// module
 #include "analysis/TimelineJsonlReader.h"
-#include "player/VideoTexture.h"
+#include "playback/VideoTexture.h"
 
 namespace OriGine {
 class Mp4Player;

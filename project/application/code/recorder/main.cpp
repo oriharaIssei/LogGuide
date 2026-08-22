@@ -1,4 +1,4 @@
-﻿
+
 /// stl
 #include <memory>
 #include <string>
@@ -9,8 +9,7 @@
 #include "directX12/DxDebug.h"
 
 /// FrameWorks
-#include "LogGuideEditor.h"
-#include "LogGuideGame.h"
+#include "RecorderApp.h"
 #include "FrameWork.h"
 
 /// externals
@@ -29,11 +28,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
     std::unique_ptr<FrameWork> application = nullptr;
 
-#if defined(DEBUG) || defined(DEBUG_REPLAY)
-    application = std::make_unique<LogGuideEditor>();
-#else
-    application = std::make_unique<LogGuideGame>();
-#endif
+    application = std::make_unique<RecorderApp>();
 
     application->Initialize(cmdLines);
 

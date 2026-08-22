@@ -21,7 +21,7 @@
 /project/*.vcxproj.*
 /project/application/*.vcxproj
 /project/application/*.vcxproj.*
-/project/application/imgui.ini
+/project/application/imgui*.ini
 
 # Visual Studio
 .vs/
@@ -41,7 +41,8 @@ Thumbs.db
 
 # Premake (engine submodule 側にあるのでローカルに置かれた場合のみ)
 /project/config/premake5.exe
-project/imgui.ini
+# ImGui のウィンドウ配置。録画/再生アプリで別ファイルに分けている
+project/imgui*.ini
 /project/application/externals
 *.log
 *.bat

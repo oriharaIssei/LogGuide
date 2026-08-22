@@ -37,62 +37,6 @@ bool FileExists(const std::string& path) {
     return fs::exists(path, ec);
 }
 
-// 要約プロンプトに入れるタイムスタンプ（m:ss）。
-std::string FormatStamp(int64_t timeMs) {
-    const int totalSec = static_cast<int>(timeMs / 1000);
-    char buf[16] = {};
-    std::snprintf(buf, sizeof(buf), "%d:%02d", totalSec / 60, totalSec % 60);
-    return buf;
-}
-
-bool IsMeaningfulTag(const std::string& tag) {
-    return !tag.empty() && tag != "none" && tag != "unclassified";
-}
-
-// タイムライン全体から、要約 LLM に渡すイベント要点を組み立てる。
-// 合成イベント（stuck_candidate 等）を優先して含めることで、「無発話が 3 回」ではなく
-// 「詰まっていた可能性のある区間が 3 箇所（各タイムスタンプ）」と報告させる。
-std::string BuildEventDigest(const TimelineData& timeline) {
-    // unexpected_reaction が指す発話本文を引くための索引。
-    auto findSpeech = [&timeline](int64_t timeMs) -> const TimelineEntry* {
-        for (const auto& e : timeline.entries) {
-            if (e.type == "speech" && e.timeMs == timeMs) {
-                return &e;
-            }
-        }
-        return nullptr;
-    };
-
-    std::string digest;
-    for (const auto& e : timeline.entries) {
-        const std::string stamp = "[" + FormatStamp(e.timeMs) + "] ";
-
-        if (e.type == "stuck_candidate") {
-            digest += stamp + "詰まり候補: 無発話と画面停滞が " +
-                      std::to_string(e.overlapMs / 1000) + " 秒重なった\n";
-        } else if (e.type == "unexpected_reaction") {
-            std::string what = "想定外の反応: 画面が切り替わった直後の発話";
-            for (const auto& ref : e.sources) {
-                if (ref.type != "speech") {
-                    continue;
-                }
-                if (const TimelineEntry* sp = findSpeech(ref.timeMs)) {
-                    what += " [" + sp->tag + "] " + sp->text;
-                }
-            }
-            digest += stamp + what + "\n";
-        } else if (e.type == "focus_likely") {
-            digest += stamp + "集中していた可能性: " + std::to_string(e.durationMs / 1000) +
-                      " 秒の無発話だが画面は動いていた（詰まりではない）\n";
-        } else if (e.type == "silence_end" && !e.suppressed && e.durationMs > 0) {
-            digest += stamp + "無発話 " + std::to_string(e.durationMs / 1000) + " 秒\n";
-        } else if (e.type == "speech" && IsMeaningfulTag(e.tag)) {
-            digest += stamp + "[" + e.tag + "] " + e.text + "\n";
-        }
-    }
-    return digest;
-}
-
 } // namespace
 
 AudioAnalysisPipeline::AudioAnalysisPipeline()  = default;
@@ -593,7 +537,7 @@ bool AudioAnalysisPipeline::SummarizeExisting(const std::string& jsonlPath) {
                 transcript += "\n";
             }
         }
-        const std::string digest = BuildEventDigest(tl);
+        const std::string digest = SessionSummarizer::BuildEventDigest(tl);
 
         if (!transcript.empty()) {
             LOG_INFO("AudioAnalysisPipeline: summarizing '{}'...", jsonlPath);
