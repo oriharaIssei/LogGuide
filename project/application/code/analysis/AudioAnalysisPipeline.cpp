@@ -6,6 +6,7 @@
 #include "analysis/SignalEventDetector.h"
 #include "analysis/SpeechChunkSplitter.h"
 #include "analysis/TimelineEvent.h"
+#include "analysis/TimelineJsonlReader.h"
 #include "analysis/TimelineJsonlWriter.h"
 #include "analysis/TranscriptClassifier.h"
 #include "analysis/WhisperTranscriber.h"
@@ -17,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 
 namespace fs = std::filesystem;
@@ -35,12 +37,81 @@ bool FileExists(const std::string& path) {
     return fs::exists(path, ec);
 }
 
+// 要約プロンプトに入れるタイムスタンプ（m:ss）。
+std::string FormatStamp(int64_t timeMs) {
+    const int totalSec = static_cast<int>(timeMs / 1000);
+    char buf[16] = {};
+    std::snprintf(buf, sizeof(buf), "%d:%02d", totalSec / 60, totalSec % 60);
+    return buf;
+}
+
+bool IsMeaningfulTag(const std::string& tag) {
+    return !tag.empty() && tag != "none" && tag != "unclassified";
+}
+
+// タイムライン全体から、要約 LLM に渡すイベント要点を組み立てる。
+// 合成イベント（stuck_candidate 等）を優先して含めることで、「無発話が 3 回」ではなく
+// 「詰まっていた可能性のある区間が 3 箇所（各タイムスタンプ）」と報告させる。
+std::string BuildEventDigest(const TimelineData& timeline) {
+    // unexpected_reaction が指す発話本文を引くための索引。
+    auto findSpeech = [&timeline](int64_t timeMs) -> const TimelineEntry* {
+        for (const auto& e : timeline.entries) {
+            if (e.type == "speech" && e.timeMs == timeMs) {
+                return &e;
+            }
+        }
+        return nullptr;
+    };
+
+    std::string digest;
+    for (const auto& e : timeline.entries) {
+        const std::string stamp = "[" + FormatStamp(e.timeMs) + "] ";
+
+        if (e.type == "stuck_candidate") {
+            digest += stamp + "詰まり候補: 無発話と画面停滞が " +
+                      std::to_string(e.overlapMs / 1000) + " 秒重なった\n";
+        } else if (e.type == "unexpected_reaction") {
+            std::string what = "想定外の反応: 画面が切り替わった直後の発話";
+            for (const auto& ref : e.sources) {
+                if (ref.type != "speech") {
+                    continue;
+                }
+                if (const TimelineEntry* sp = findSpeech(ref.timeMs)) {
+                    what += " [" + sp->tag + "] " + sp->text;
+                }
+            }
+            digest += stamp + what + "\n";
+        } else if (e.type == "focus_likely") {
+            digest += stamp + "集中していた可能性: " + std::to_string(e.durationMs / 1000) +
+                      " 秒の無発話だが画面は動いていた（詰まりではない）\n";
+        } else if (e.type == "silence_end" && !e.suppressed && e.durationMs > 0) {
+            digest += stamp + "無発話 " + std::to_string(e.durationMs / 1000) + " 秒\n";
+        } else if (e.type == "speech" && IsMeaningfulTag(e.tag)) {
+            digest += stamp + "[" + e.tag + "] " + e.text + "\n";
+        }
+    }
+    return digest;
+}
+
 } // namespace
 
 AudioAnalysisPipeline::AudioAnalysisPipeline()  = default;
 
 AudioAnalysisPipeline::~AudioAnalysisPipeline() {
+    // 破棄前に、走っている解析・終了処理を必ず完了させる（スレッドが this を参照するため）。
     Stop();
+    if (finalizeThread_.joinable()) {
+        finalizeThread_.join();
+    }
+    if (summarizeThread_.joinable()) {
+        summarizeThread_.join();
+    }
+    // Stop が呼ばれず worker が走っていた場合の保険。
+    stopRequested_.store(true);
+    queueCv_.notify_all();
+    if (worker_.joinable()) {
+        worker_.join();
+    }
 }
 
 bool AudioAnalysisPipeline::Initialize(const AnalysisConfig& config, std::vector<std::string>* warnings) {
@@ -124,19 +195,23 @@ bool AudioAnalysisPipeline::Initialize(const AnalysisConfig& config, std::vector
     return true;
 }
 
-bool AudioAnalysisPipeline::Start(const std::string& jsonlPath, const std::string& sourceVideoName) {
-    if (running_.load()) {
-        return false;
-    }
-    sourceVideoName_ = sourceVideoName;
+void AudioAnalysisPipeline::SetOnFinalized(std::function<void(const std::string&)> callback) {
+    onFinalized_ = std::move(callback);
+}
 
-    writer_ = std::make_unique<TimelineJsonlWriter>();
-    if (!writer_->Open(jsonlPath)) {
-        LOG_ERROR("AudioAnalysisPipeline: failed to open jsonl: {}", jsonlPath);
-        writer_.reset();
+bool AudioAnalysisPipeline::Start(std::shared_ptr<TimelineJsonlWriter> writer) {
+    // 前セッションの終了処理（バッチ解析・相関）がまだ走っていれば、ここで完了を待つ。
+    // running_ を落とすのはその終了処理なので、running_ の判定より先に join する。
+    // これにより finalizeThread_ は非 joinable になり、次の Stop で安全に再代入できる。
+    if (finalizeThread_.joinable()) {
+        finalizeThread_.join();
+    }
+    if (running_.load() || !writer || !writer->IsOpen()) {
         return false;
     }
-    writer_->Write(MakeMetaEvent(1, sourceVideoName));
+
+    writer_    = std::move(writer);
+    jsonlPath_ = writer_->GetPath();
 
     // チャンク分割・信号検出をセットアップ。
     SpeechChunkSplitter::Config sc;
@@ -167,7 +242,7 @@ bool AudioAnalysisPipeline::Start(const std::string& jsonlPath, const std::strin
     running_.store(true);
     worker_ = std::thread(&AudioAnalysisPipeline::WorkerLoop, this);
 
-    LOG_INFO("AudioAnalysisPipeline: started -> {}", jsonlPath);
+    LOG_INFO("AudioAnalysisPipeline: started -> {}", jsonlPath_);
     return true;
 }
 
@@ -401,28 +476,43 @@ void AudioAnalysisPipeline::EnterAnalysisStopped(int64_t nowMs) {
 }
 
 void AudioAnalysisPipeline::Stop() {
-    if (!running_.load()) {
+    if (!running_.load() || finalizing_.load()) {
         return;
     }
     stopRequested_.store(true);
     queueCv_.notify_all();
+
+    // 終了処理（ワーカ join → 退避音声のバッチ解析 → writer close）は別スレッドで実行し、
+    // UI スレッドを固めない。要約はここでは行わない（ビューアのボタンで on-demand 実行）。
+    // 直前の終了スレッドは Start 側で join 済みなので、ここでの再代入は安全。
+    finalizing_.store(true);
+    finalizeThread_ = std::thread(&AudioAnalysisPipeline::FinalizeStop, this);
+}
+
+void AudioAnalysisPipeline::FinalizeStop() {
     if (worker_.joinable()) {
         worker_.join();
     }
 
     // 第 3 段縮退で退避した音声があれば、GPU が空いた今バッチ解析する。
+    // （これは文字起こしの完成であり要約ではない。要約はユーザーがボタンで実行する。）
     RunBatchAnalysis();
-
-    // セッション要約（有効時）。
-    RunSummarize();
 
     if (writer_) {
         writer_->Close();
         writer_.reset();
     }
-    running_.store(false);
     LOG_INFO("AudioAnalysisPipeline: stopped (chunks={}, speech={})",
              chunksProcessed_.load(), speechEvents_.load());
+
+    // タイムラインが確定した後にクロスモーダル相関を回す。まだ finalizing_ を
+    // 立てたままにしておき、相関中も UI が「解析処理中」と表示できるようにする。
+    if (onFinalized_ && !jsonlPath_.empty()) {
+        onFinalized_(jsonlPath_);
+    }
+
+    running_.store(false);
+    finalizing_.store(false);
 }
 
 void AudioAnalysisPipeline::RunBatchAnalysis() {
@@ -478,29 +568,50 @@ void AudioAnalysisPipeline::RunBatchAnalysis() {
     }
 }
 
-void AudioAnalysisPipeline::RunSummarize() {
-    if (!summarizer_ || !summarizer_->IsAvailable()) {
-        return;
-    }
-    std::string transcript;
-    std::string digest;
-    {
-        std::lock_guard<std::mutex> l(transcriptMutex_);
-        transcript = fullTranscript_;
-        for (const auto& d : eventDigest_) {
-            digest += d;
-            digest += "\n";
-        }
-    }
-    if (transcript.empty()) {
-        return;
-    }
+bool AudioAnalysisPipeline::CanSummarize() const {
+    return summarizer_ != nullptr && summarizer_->IsAvailable() &&
+           !running_.load() && !finalizing_.load() && !summarizing_.load();
+}
 
-    LOG_INFO("AudioAnalysisPipeline: summarizing session...");
-    const std::string summary = summarizer_->Summarize(transcript, digest);
-    if (!summary.empty() && writer_) {
-        writer_->Write(MakeSummaryEvent(summary));
+bool AudioAnalysisPipeline::SummarizeExisting(const std::string& jsonlPath) {
+    // 録画中・終了処理中・要約中・モデル無効なら実行しない（LLM の同時使用を避ける）。
+    if (!CanSummarize()) {
+        return false;
     }
+    // 前回の要約スレッドを回収してから再代入する。
+    if (summarizeThread_.joinable()) {
+        summarizeThread_.join();
+    }
+    summarizing_.store(true);
+    summarizeThread_ = std::thread([this, jsonlPath]() {
+        // 開いている .jsonl から文字起こしと（合成イベントを含む）イベント要点を復元する。
+        TimelineData tl = TimelineJsonlReader::LoadFromFile(jsonlPath);
+        std::string transcript;
+        for (const auto& e : tl.entries) {
+            if (e.type == "speech" && !e.text.empty()) {
+                transcript += e.text;
+                transcript += "\n";
+            }
+        }
+        const std::string digest = BuildEventDigest(tl);
+
+        if (!transcript.empty()) {
+            LOG_INFO("AudioAnalysisPipeline: summarizing '{}'...", jsonlPath);
+            const std::string summary = summarizer_->Summarize(transcript, digest);
+            if (!summary.empty()) {
+                // 追記のみ（既存タイムラインを壊さない）。読み込み側は最後の summary を採用する。
+                TimelineJsonlWriter w;
+                if (w.Open(jsonlPath)) {
+                    w.Write(MakeSummaryEvent(summary));
+                    w.Close();
+                }
+            }
+        } else {
+            LOG_WARN("AudioAnalysisPipeline: no transcript in '{}'; summary skipped", jsonlPath);
+        }
+        summarizing_.store(false);
+    });
+    return true;
 }
 
 AudioAnalysisPipeline::Status AudioAnalysisPipeline::GetStatus() const {
@@ -508,6 +619,7 @@ AudioAnalysisPipeline::Status AudioAnalysisPipeline::GetStatus() const {
     s.transcribeEnabled = transcribeEnabled_;
     s.classifyEnabled   = classifier_ != nullptr;
     s.summarizeEnabled  = summarizer_ != nullptr;
+    s.finalizing        = finalizing_.load();
     s.degradeLevel      = degradeLevel_.load();
     s.lastRtf           = lastRtf_.load();
     s.chunksProcessed   = chunksProcessed_.load();

@@ -48,8 +48,23 @@ TimelineData TimelineJsonlReader::LoadFromFile(const std::string& path) {
         e.text       = j.value("text", "");
         e.tag        = j.value("tag", "");
         e.label      = j.value("label", "");
+        if (e.label.empty()) {
+            e.label = j.value("kind", ""); // screen_blank_start の "black"/"white"
+        }
         e.confidence = j.value("confidence", 0.0);
         e.durationMs = j.value("duration_ms", int64_t{0});
+        e.overlapMs  = j.value("overlap_ms", int64_t{0});
+        e.gapMs      = j.value("gap_ms", int64_t{0});
+        e.count      = j.value("count", 0);
+
+        if (auto it = j.find("sources"); it != j.end() && it->is_array()) {
+            for (const auto& s : *it) {
+                TimelineSourceRef ref;
+                ref.type   = s.value("type", "");
+                ref.timeMs = s.value("time_ms", int64_t{0});
+                e.sources.push_back(std::move(ref));
+            }
+        }
         data.entries.push_back(std::move(e));
     }
 
@@ -57,6 +72,21 @@ TimelineData TimelineJsonlReader::LoadFromFile(const std::string& path) {
                      [](const TimelineEntry& a, const TimelineEntry& b) {
                          return a.timeMs < b.timeMs;
                      });
+
+    // focus_likely が指す無発話イベントを抑制する。JSONL は追記専用で既存行を
+    // 書き換えられないため、参照の解決は読み込み側の責務になる。
+    for (const auto& fe : data.entries) {
+        if (fe.type != "focus_likely") {
+            continue;
+        }
+        for (const auto& ref : fe.sources) {
+            for (auto& target : data.entries) {
+                if (target.type == ref.type && target.timeMs == ref.timeMs) {
+                    target.suppressed = true;
+                }
+            }
+        }
+    }
     return data;
 }
 

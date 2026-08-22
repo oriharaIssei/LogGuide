@@ -17,8 +17,11 @@ namespace LogGuide {
 //   [llm.report]    レポート生成（将来）。既定は空 = 無効。
 //   [whisper]       文字起こしモデルと VAD モデル
 //   [analysis]      チャンク長・無発話しきい値など信号処理パラメータ
+//   [video_analysis] フレーム差分ベースの映像シグナル検出パラメータ
+//   [correlation]   音声×映像のクロスモーダル相関ルールのしきい値
 //
 // model が空文字列 / 未指定なら、その役割の機能は無効化される（段階的縮退）。
+// video_analysis.enabled = false なら従来どおり音声のみで動作する。
 // =============================================================================
 
 struct LlmRoleConfig {
@@ -48,12 +51,42 @@ struct AnalysisTuning {
     float rtfFallbackThreshold = 1.0f; // 実測 RTF がこれを超え続けたら medium へ縮退
 };
 
+// 映像シグナル検出（フレーム差分）。CPU のみで完結する軽量処理。
+// 単位は ms。閾値はゲームのジャンル差が大きいので、実測して調整する前提。
+struct VideoAnalysisTuning {
+    bool  enabled              = true;
+    int   sampleFps            = 3;     // 差分を測るサンプリングレート
+    int   downscaleWidth       = 160;   // 差分計算用のダウンスケール幅（高さはアスペクト比維持）
+    float staticThreshold      = 0.02f; // 正規化差分量。これ以下なら「動きなし」
+    int   staticDurationMs     = 30000; // 動きなしがこの時間続いたら screen_static_start
+    int   staticExitMs         = 1500;  // 停滞の解除に必要な連続活動時間（ヒステリシス）
+    float blankLumaThreshold   = 0.05f; // 平均輝度がこの下/上（1-x）かつ一様なら暗転/白飛び
+    int   blankDurationMs      = 1000;  // 単色フレームがこの時間続いたら screen_blank_start
+    float transitionZ          = 3.0f;  // 差分量の z スコアがこれ以上なら画面遷移
+    int   transitionDebounceMs = 1000;  // 画面遷移検出の最小間隔
+    int   thrashWindowMs       = 10000; // この窓に
+    int   thrashCount          = 4;     // これだけ遷移が集中したら screen_thrash
+    int   thrashCooldownMs     = 15000; // screen_thrash の最小間隔
+    int   warmupSamples        = 10;    // z スコア判定を始めるまでに貯めるサンプル数
+};
+
+// クロスモーダル相関（音声イベント × 映像イベント）。録画終了後に遅延評価する。
+struct CorrelationTuning {
+    bool enabled             = true;
+    int  stuckMinOverlapMs   = 15000; // 無発話と画面停滞の重複がこれ以上で stuck_candidate
+    int  reactionWindowMs    = 5000;  // 画面遷移からこの時間内の confusion/surprise で unexpected_reaction
+    int  focusMinDurationMs  = 30000; // 無発話がこの長さ以上で focus_likely の候補
+    int  focusMinTransitions = 1;     // かつ区間内にこれだけ画面遷移があれば「集中」とみなす
+};
+
 struct AnalysisConfig {
-    LlmRoleConfig  classify;
-    LlmRoleConfig  summarize;
-    LlmRoleConfig  report;
-    WhisperConfig  whisper;
-    AnalysisTuning tuning;
+    LlmRoleConfig       classify;
+    LlmRoleConfig       summarize;
+    LlmRoleConfig       report;
+    WhisperConfig       whisper;
+    AnalysisTuning      tuning;
+    VideoAnalysisTuning video;
+    CorrelationTuning   correlation;
 
     // logguide.toml を読み込む。ファイルが無い場合は既定値のまま true を返す
     // （設定ファイル無し = 全 LLM 無効・信号レベルのみ、で動作させる）。

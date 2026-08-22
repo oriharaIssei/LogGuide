@@ -3,6 +3,10 @@
 /// module
 #include "analysis/AnalysisConfig.h"
 #include "analysis/AudioAnalysisPipeline.h"
+#include "analysis/CrossModalCorrelator.h"
+#include "analysis/TimelineEvent.h"
+#include "analysis/TimelineJsonlWriter.h"
+#include "analysis/VideoAnalysisPipeline.h"
 #include "recording/SessionManifest.h"
 
 /// engine
@@ -88,12 +92,19 @@ void RecordingSystem::Initialize(OriGine::Engine* engine) {
     // AI 解析パイプライン: logguide.toml を読み、モデルをロードする。
     // モデル欠落・LLM 未設定でも、信号レベル検出のみで動作させる（段階的縮退）。
     analysisWarnings_.clear();
-    AnalysisConfig analysisConfig = AnalysisConfig::LoadFromFile("logguide.toml", nullptr);
+    analysisConfig_ = AnalysisConfig::LoadFromFile("logguide.toml", nullptr);
     analysis_ = std::make_unique<AudioAnalysisPipeline>();
-    if (!analysis_->Initialize(analysisConfig, &analysisWarnings_)) {
+    audioAnalysisReady_ = analysis_->Initialize(analysisConfig_, &analysisWarnings_);
+    if (!audioAnalysisReady_) {
         // 解析全体が無効（analysis.enabled=false）。パイプラインは保持するが Start しない。
         LOG_INFO("RecordingSystem: audio analysis disabled");
     }
+
+    // 映像シグナル解析（フレーム差分）。モデルは不要で CPU のみ。
+    // video_analysis.enabled = false なら従来どおり音声のみで動作する。
+    videoAnalysis_ = std::make_unique<VideoAnalysisPipeline>();
+    videoAnalysis_->Initialize(analysisConfig_.video, &analysisWarnings_);
+
     for (const auto& w : analysisWarnings_) {
         LOG_WARN("RecordingSystem: analysis: {}", w);
     }
@@ -105,6 +116,10 @@ void RecordingSystem::Finalize() {
     if (state_ == State::Recording) {
         StopRecording();
     }
+    if (correlationThread_.joinable()) {
+        correlationThread_.join();
+    }
+    videoAnalysis_.reset();
     analysis_.reset();
     cameraRecorder_.reset();
     screenRecorder_.reset();
@@ -309,7 +324,16 @@ bool RecordingSystem::StartRecording() {
 }
 
 void RecordingSystem::StartAnalysis() {
-    if (!analysis_) {
+    // 前セッションの相関スレッドが残っていれば回収する。
+    if (correlationThread_.joinable()) {
+        correlationThread_.join();
+    }
+    timelineWriter_.reset();
+
+    const bool wantAudio = audioAnalysisReady_ && analysis_ != nullptr;
+    const bool wantVideo = videoAnalysis_ != nullptr && videoAnalysis_->IsEnabled() &&
+                           settings_.recordScreenTrack && screen_ != nullptr;
+    if (!wantAudio && !wantVideo) {
         return;
     }
 
@@ -322,44 +346,97 @@ void RecordingSystem::StartAnalysis() {
     const std::string jsonlPath =
         (fs::path(session_.directory) / (fs::path(sourceVideo).stem().string() + ".jsonl")).string();
 
-    if (!analysis_->Start(jsonlPath, sourceVideo)) {
-        LOG_WARN("RecordingSystem: failed to start audio analysis (continuing recording only)");
+    // 音声・映像の両パイプラインは 1 本のタイムラインへ書く。ライタは追記を直列化するので
+    // 共有して問題ない（別々に開くと追記が競合する）。meta 行はここで 1 度だけ書く。
+    timelineWriter_ = std::make_shared<TimelineJsonlWriter>();
+    if (!timelineWriter_->Open(jsonlPath)) {
+        LOG_ERROR("RecordingSystem: failed to open timeline jsonl '{}' (continuing recording only)", jsonlPath);
+        timelineWriter_.reset();
         return;
     }
+    timelineWriter_->Write(MakeMetaEvent(1, sourceVideo));
 
-    // マイク（テスターの発話）を優先して解析へ分岐する。マイク無効ならシステム音声を使う。
-    auto onAudio = [this](const float* data, uint32_t frameCount, uint32_t channels) {
-        // Microphone/SystemAudioCapture のサンプルレートは mixFormat 依存。
-        // ここでは各キャプチャの GetFormat から実レートを渡す。
-        if (analysis_) {
-            const uint32_t rate = (settings_.recordMic && microphone_)
-                                      ? microphone_->GetFormat().sampleRate
-                                      : (systemAudio_ ? systemAudio_->GetFormat().sampleRate : 48000);
-            analysis_->OnAudio(data, frameCount, channels, rate);
+    // --- 音声解析 ---
+    if (wantAudio && analysis_->Start(timelineWriter_)) {
+        // タイムライン確定後（ワーカ join・バッチ解析・ライタ Close の後）に相関を回す。
+        analysis_->SetOnFinalized([this](const std::string& path) { RunCorrelation(path); });
+
+        // マイク（テスターの発話）を優先して解析へ分岐する。マイク無効ならシステム音声を使う。
+        auto onAudio = [this](const float* data, uint32_t frameCount, uint32_t channels) {
+            // Microphone/SystemAudioCapture のサンプルレートは mixFormat 依存。
+            // ここでは各キャプチャの GetFormat から実レートを渡す。
+            if (analysis_) {
+                const uint32_t rate = (settings_.recordMic && microphone_)
+                                          ? microphone_->GetFormat().sampleRate
+                                          : (systemAudio_ ? systemAudio_->GetFormat().sampleRate : 48000);
+                analysis_->OnAudio(data, frameCount, channels, rate);
+            }
+        };
+
+        if (settings_.recordMic && microphone_) {
+            microphone_->SetTapCallback(onAudio);
+        } else if (settings_.recordSystemAudio && systemAudio_) {
+            systemAudio_->SetTapCallback(onAudio);
+        } else {
+            LOG_WARN("RecordingSystem: no audio source for analysis; signal/transcription will be idle");
         }
-    };
+    } else if (wantAudio) {
+        LOG_WARN("RecordingSystem: failed to start audio analysis (continuing recording only)");
+    }
 
-    if (settings_.recordMic && microphone_) {
-        microphone_->SetTapCallback(onAudio);
-    } else if (settings_.recordSystemAudio && systemAudio_) {
-        systemAudio_->SetTapCallback(onAudio);
-    } else {
-        LOG_WARN("RecordingSystem: no audio source for analysis; signal/transcription will be idle");
+    // --- 映像解析 ---
+    // ScreenRecorder が SetFrameCallback を専有しているのでタップ側へ結線する。
+    if (wantVideo && videoAnalysis_->Start(timelineWriter_)) {
+        screen_->SetTapCallback([this](const OriGine::ScreenFrame& frame) {
+            if (frame.cpuData) {
+                videoAnalysis_->OnFrame(frame.cpuData, frame.width, frame.height, frame.stride);
+            }
+        });
     }
 }
 
 void RecordingSystem::StopAnalysis() {
-    // まずタップを外し、これ以上 OnAudio が来ないようにする。
+    // まずタップを外し、これ以上 OnAudio / OnFrame が来ないようにする。
+    // （画面キャプチャスレッドは TeardownCaptures で既に join 済み。）
     if (microphone_) {
         microphone_->SetTapCallback(nullptr);
     }
     if (systemAudio_) {
         systemAudio_->SetTapCallback(nullptr);
     }
-    // Stop はワーカー join + 終了後バッチ解析 + 要約を行う（時間がかかりうる）。
-    if (analysis_) {
-        analysis_->Stop();
+    if (screen_) {
+        screen_->SetTapCallback(nullptr);
     }
+
+    // 映像側を先に閉じる。開いたままの停滞/暗転区間を *_end として書き出すため、
+    // 音声側がライタを Close する前に済ませる必要がある。
+    if (videoAnalysis_) {
+        videoAnalysis_->Stop();
+    }
+
+    // Stop はワーカー join + 終了後バッチ解析 + 相関を行う（時間がかかりうるため別スレッド）。
+    if (analysis_ && analysis_->IsRunning()) {
+        analysis_->Stop();
+        return; // ライタの Close と相関は音声側の終了スレッドが担う
+    }
+
+    // 音声解析が動いていない（映像のみ）ケース: ここでライタを閉じ、相関を別スレッドで回す。
+    if (timelineWriter_ && timelineWriter_->IsOpen()) {
+        const std::string jsonlPath = timelineWriter_->GetPath();
+        timelineWriter_->Close();
+        if (correlationThread_.joinable()) {
+            correlationThread_.join();
+        }
+        correlationThread_ = std::thread([this, jsonlPath]() { RunCorrelation(jsonlPath); });
+    }
+}
+
+void RecordingSystem::RunCorrelation(const std::string& jsonlPath) {
+    if (!analysisConfig_.correlation.enabled) {
+        return;
+    }
+    CrossModalCorrelator correlator(analysisConfig_.correlation);
+    correlator.RunOnFile(jsonlPath);
 }
 
 void RecordingSystem::TeardownCaptures() {

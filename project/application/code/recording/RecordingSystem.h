@@ -4,9 +4,11 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 /// module
+#include "analysis/AnalysisConfig.h"
 #include "recording/RecordingComponents.h"
 
 namespace OriGine {
@@ -22,6 +24,8 @@ class ScreenRecorder;
 namespace LogGuide {
 
 class AudioAnalysisPipeline;
+class VideoAnalysisPipeline;
+class TimelineJsonlWriter;
 
 // =============================================================================
 // RecordingSystem
@@ -89,16 +93,21 @@ public:
     // AI 解析パイプライン（文字起こし・イベント検出）。UI が状態を参照するために公開する。
     AudioAnalysisPipeline*       Analysis() { return analysis_.get(); }
     const AudioAnalysisPipeline* Analysis() const { return analysis_.get(); }
+    // 映像シグナル解析（フレーム差分）。しきい値調整のため UI に実測値を出す。
+    VideoAnalysisPipeline*       VideoAnalysis() { return videoAnalysis_.get(); }
+    const VideoAnalysisPipeline* VideoAnalysis() const { return videoAnalysis_.get(); }
     // 直近 Initialize で無効化された解析機能の理由（モデル欠落など）。UI 表示用。
     const std::vector<std::string>& AnalysisWarnings() const { return analysisWarnings_; }
 
 private:
     // 失敗時に開いたデバイス/レコーダをすべて閉じる（session.json は書かない）。
     void TeardownCaptures();
-    // 解析パイプラインを起動し、アクティブな音声源のタップを結線する。
+    // 解析パイプラインを起動し、アクティブな音声源と画面キャプチャのタップを結線する。
     void StartAnalysis();
     // タップを外し、解析を停止する（終了後バッチ解析・要約を含む）。
     void StopAnalysis();
+    // 確定した JSONL に音声×映像の合成イベントを追記する。バックグラウンドで走る。
+    void RunCorrelation(const std::string& jsonlPath);
     // camera.mp4 の録画を開始し、track を outTracks に追加する。
     bool StartCameraTrack(const SessionInfo& session, std::vector<TrackInfo>& outTracks);
     // screen.mp4 の録画を開始し、track を outTracks に追加する。
@@ -114,7 +123,16 @@ private:
     std::unique_ptr<OriGine::ScreenRecorder>     screenRecorder_;
 
     std::unique_ptr<AudioAnalysisPipeline>       analysis_;
+    std::unique_ptr<VideoAnalysisPipeline>       videoAnalysis_;
     std::vector<std::string>                     analysisWarnings_;
+
+    // 音声・映像の両パイプラインが 1 本のタイムラインへ書くために共有するライタ。
+    // Close は音声側の終了スレッド（解析無効なら StopAnalysis）が行う。
+    std::shared_ptr<TimelineJsonlWriter> timelineWriter_;
+    AnalysisConfig                       analysisConfig_;
+    bool                                 audioAnalysisReady_ = false;
+    // 音声解析が無効なときの相関実行スレッド（有効時は音声側の終了スレッドで走る）。
+    std::thread                          correlationThread_;
 
     RecordingSettings settings_;
     SessionInfo       session_;     // 録画中の作業用

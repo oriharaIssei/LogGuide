@@ -133,6 +133,27 @@ AnalysisConfig AnalysisConfig::LoadFromFile(const std::string& tomlPath, std::st
     cfg.tuning.chunkSleepMs         = toml.Int("analysis.chunk_sleep_ms", 200);
     cfg.tuning.rtfFallbackThreshold = toml.Float("analysis.rtf_fallback_threshold", 1.0f);
 
+    cfg.video.enabled              = toml.Bool("video_analysis.enabled", true);
+    cfg.video.sampleFps            = toml.Int("video_analysis.sample_fps", 3);
+    cfg.video.downscaleWidth       = toml.Int("video_analysis.downscale_width", 160);
+    cfg.video.staticThreshold      = toml.Float("video_analysis.static_threshold", 0.02f);
+    cfg.video.staticDurationMs     = toml.Int("video_analysis.static_duration_ms", 30000);
+    cfg.video.staticExitMs         = toml.Int("video_analysis.static_exit_ms", 1500);
+    cfg.video.blankLumaThreshold   = toml.Float("video_analysis.blank_luma_threshold", 0.05f);
+    cfg.video.blankDurationMs      = toml.Int("video_analysis.blank_duration_ms", 1000);
+    cfg.video.transitionZ          = toml.Float("video_analysis.transition_z", 3.0f);
+    cfg.video.transitionDebounceMs = toml.Int("video_analysis.transition_debounce_ms", 1000);
+    cfg.video.thrashWindowMs       = toml.Int("video_analysis.thrash_window_ms", 10000);
+    cfg.video.thrashCount          = toml.Int("video_analysis.thrash_count", 4);
+    cfg.video.thrashCooldownMs     = toml.Int("video_analysis.thrash_cooldown_ms", 15000);
+    cfg.video.warmupSamples        = toml.Int("video_analysis.warmup_samples", 10);
+
+    cfg.correlation.enabled             = toml.Bool("correlation.enabled", true);
+    cfg.correlation.stuckMinOverlapMs   = toml.Int("correlation.stuck_min_overlap_ms", 15000);
+    cfg.correlation.reactionWindowMs    = toml.Int("correlation.reaction_window_ms", 5000);
+    cfg.correlation.focusMinDurationMs  = toml.Int("correlation.focus_min_duration_ms", 30000);
+    cfg.correlation.focusMinTransitions = toml.Int("correlation.focus_min_transitions", 1);
+
     return cfg;
 }
 

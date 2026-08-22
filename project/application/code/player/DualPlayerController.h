@@ -87,6 +87,10 @@ public:
     // 開いた動画/セッションに対応する .jsonl があれば読み込まれている。
     const TimelineData& GetTimeline() const { return timeline_; }
     bool                HasTimeline() const { return !timeline_.Empty(); }
+    // 読み込んだ .jsonl のパス（要約ボタンの対象）。未ロードなら空。
+    const std::string&  GetTimelinePath() const { return timelinePath_; }
+    // 現在のタイムライン .jsonl をディスクから読み直す（要約追記後の反映用）。
+    void                ReloadTimeline();
 
 private:
     struct Slot {
@@ -108,6 +112,7 @@ private:
     bool                         mfInitialized_ = false;
     std::string                  lastError_;
     TimelineData                 timeline_;
+    std::string                  timelinePath_;
 };
 
 } // namespace LogGuide

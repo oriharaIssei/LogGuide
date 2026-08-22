@@ -3,6 +3,7 @@
 #ifdef _DEBUG
 
 /// module
+#include "analysis/AudioAnalysisPipeline.h"
 #include "analysis/TimelineJsonlReader.h"
 #include "player/DualPlayerController.h"
 #include "player/FileDialog.h"
@@ -15,6 +16,7 @@
 #include <cctype>
 #include <cfloat>
 #include <cstdio>
+#include <iterator>
 #include <string>
 
 namespace LogGuide {
@@ -64,8 +66,84 @@ void HandleIncomingFile(DualPlayerController& player, const std::string& path) {
     }
 }
 
+// イベントの出自。マーカーの描き分け（上半分=映像 / 下半分=音声 / 全高=合成）に使う。
+enum class EventGroup { Audio, Video, Composite, None };
+
+// フィルタ 1 項目 = 関連する type をまとめた表示単位。
+struct FilterItem {
+    const char* key;   // 代表 type（start/end 対はまとめる）
+    const char* label; // チェックボックスの表示名
+    EventGroup  group;
+};
+
+constexpr FilterItem kFilterItems[] = {
+    {"speech",              "発話",         EventGroup::Audio},
+    {"silence",             "無発話",       EventGroup::Audio},
+    {"volume_spike",        "音量スパイク", EventGroup::Audio},
+    {"speech_density",      "発話密度",     EventGroup::Audio},
+    {"degradation",         "解析縮退",     EventGroup::Audio},
+    {"screen_static",       "画面停滞",     EventGroup::Video},
+    {"screen_blank",        "暗転/ロード",  EventGroup::Video},
+    {"screen_transition",   "画面遷移",     EventGroup::Video},
+    {"screen_thrash",       "遷移頻発",     EventGroup::Video},
+    {"stuck_candidate",     "詰まり候補",   EventGroup::Composite},
+    {"unexpected_reaction", "想定外の反応", EventGroup::Composite},
+    {"focus_likely",        "集中状態",     EventGroup::Composite},
+};
+constexpr int kFilterCount = static_cast<int>(std::size(kFilterItems));
+
+// type -> kFilterItems のインデックス。マーカーにしない type（meta/summary）は -1。
+int FilterIndexOf(const std::string& type) {
+    if (type == "speech")               return 0;
+    if (type == "silence_start" || type == "silence_end") return 1;
+    if (type == "volume_spike")         return 2;
+    if (type == "speech_density")       return 3;
+    if (type == "degradation")          return 4;
+    if (type == "screen_static_start" || type == "screen_static_end") return 5;
+    if (type == "screen_blank_start"  || type == "screen_blank_end")  return 6;
+    if (type == "screen_transition")    return 7;
+    if (type == "screen_thrash")        return 8;
+    if (type == "stuck_candidate")      return 9;
+    if (type == "unexpected_reaction")  return 10;
+    if (type == "focus_likely")         return 11;
+    return -1;
+}
+
+// マーカー表示のフィルタ状態。ビューアのセッション内で保持する。
+struct TimelineFilter {
+    bool visible[kFilterCount];
+    bool showSuppressed = false; // focus_likely に抑制された無発話イベントを表示するか
+
+    TimelineFilter() {
+        for (bool& v : visible) {
+            v = true;
+        }
+    }
+
+    bool Accepts(const TimelineEntry& e) const {
+        const int idx = FilterIndexOf(e.type);
+        if (idx < 0) {
+            return false;
+        }
+        if (e.suppressed && !showSuppressed) {
+            return false;
+        }
+        return visible[idx];
+    }
+};
+
+EventGroup GroupOf(const std::string& type) {
+    const int idx = FilterIndexOf(type);
+    return idx < 0 ? EventGroup::None : kFilterItems[idx].group;
+}
+
 // イベント種別/タグごとの色。シークバーのマーカーとリストで共通に使う。
 ImU32 EventColor(const TimelineEntry& e) {
+    // 合成イベント: 単独シグナルより確度が高いので彩度を上げて手前に置く。
+    if (e.type == "stuck_candidate")     return IM_COL32(255,  40,  40, 255); // 強い赤: 詰まり候補
+    if (e.type == "unexpected_reaction") return IM_COL32(255, 170,   0, 255); // 橙: 想定外の反応
+    if (e.type == "focus_likely")        return IM_COL32(110, 210, 130, 255); // 緑: 集中状態
+
     if (e.type == "speech") {
         if (e.tag == "confusion")   return IM_COL32(255, 200,  40, 255); // 黄: 迷い
         if (e.tag == "frustration") return IM_COL32(235,  70,  60, 255); // 赤: 不満
@@ -81,14 +159,28 @@ ImU32 EventColor(const TimelineEntry& e) {
         return IM_COL32(255, 150,  60, 255); // 橙: 発話密度
     if (e.type == "degradation")
         return IM_COL32(120,  80,  40, 255); // 茶: 縮退
+
+    if (e.type == "screen_static_start" || e.type == "screen_static_end")
+        return IM_COL32(100, 145, 195, 255); // 青灰: 画面停滞
+    if (e.type == "screen_blank_start" || e.type == "screen_blank_end")
+        return IM_COL32( 90,  90, 120, 255); // 暗い青: 暗転/ロード
+    if (e.type == "screen_transition")
+        return IM_COL32( 80, 200, 200, 255); // シアン: 画面遷移
+    if (e.type == "screen_thrash")
+        return IM_COL32(255, 110, 180, 255); // ピンク: 遷移頻発
     return IM_COL32(200, 200, 200, 255);
+}
+
+std::string FormatStamp(int64_t timeMs) {
+    const int totalSec = static_cast<int>(timeMs / 1000);
+    char ts[16] = {};
+    std::snprintf(ts, sizeof(ts), "%d:%02d", totalSec / 60, totalSec % 60);
+    return ts;
 }
 
 // イベント 1 件の 1 行ラベル（リスト表示用）。
 std::string EventLabel(const TimelineEntry& e) {
-    const int totalSec = static_cast<int>(e.timeMs / 1000);
-    char ts[16] = {};
-    std::snprintf(ts, sizeof(ts), "%d:%02d", totalSec / 60, totalSec % 60);
+    const std::string secs = std::to_string(e.durationMs / 1000);
 
     std::string body;
     if (e.type == "speech") {
@@ -96,7 +188,7 @@ std::string EventLabel(const TimelineEntry& e) {
     } else if (e.type == "silence_start") {
         body = "(無発話 開始)";
     } else if (e.type == "silence_end") {
-        body = "(無発話 終了 " + std::to_string(e.durationMs / 1000) + "s)";
+        body = "(無発話 終了 " + secs + "s)";
     } else if (e.type == "volume_spike") {
         body = "♪ " + (e.label.empty() ? std::string("音量スパイク") : e.label);
     } else if (e.type == "speech_density") {
@@ -105,32 +197,99 @@ std::string EventLabel(const TimelineEntry& e) {
         body = "⚠ 解析縮退";
     } else if (e.type == "summary") {
         body = "[要約] " + e.text;
+    } else if (e.type == "screen_static_start") {
+        body = "(画面停滞 開始)";
+    } else if (e.type == "screen_static_end") {
+        body = "(画面停滞 終了 " + secs + "s)";
+    } else if (e.type == "screen_blank_start") {
+        body = "(暗転 開始" + (e.label.empty() ? std::string() : " " + e.label) + ")";
+    } else if (e.type == "screen_blank_end") {
+        body = "(暗転 終了 " + secs + "s)";
+    } else if (e.type == "screen_transition") {
+        body = "→ 画面遷移";
+    } else if (e.type == "screen_thrash") {
+        body = "⇄ 画面遷移が頻発 (" + std::to_string(e.count) + "回)";
+    } else if (e.type == "stuck_candidate") {
+        body = "★ 詰まり候補 (無発話×画面停滞 " + std::to_string(e.overlapMs / 1000) + "s)";
+    } else if (e.type == "unexpected_reaction") {
+        body = "! 想定外の反応 (画面遷移の " + std::to_string(e.gapMs) + "ms 後)";
+    } else if (e.type == "focus_likely") {
+        body = "◎ 集中状態 (無発話 " + secs + "s だが画面は動作)";
     } else {
         body = e.type;
     }
-    return std::string(ts) + "  " + body;
+    return FormatStamp(e.timeMs) + "  " + body;
 }
 
-// シークバー矩形の上にイベントマーカー（tag 別色分け）を重ねて描く。
+// シークバー矩形の上にイベントマーカーを重ねて描く。
+//   音声イベント = バー下半分 / 映像イベント = バー上半分 / 合成イベント = 全高（太線）
+// 合成は最後に描いて手前に出す。詰まり候補はさらに三角の目印を上に付ける。
 void DrawTimelineMarkers(const ImVec2& barMin, const ImVec2& barMax,
-                         const TimelineData& timeline, double durationSec) {
+                         const TimelineData& timeline, double durationSec,
+                         const TimelineFilter& filter) {
     if (timeline.Empty() || durationSec <= 0.0) {
         return;
     }
-    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImDrawList* dl    = ImGui::GetWindowDrawList();
     const float width = barMax.x - barMin.x;
-    for (const auto& e : timeline.entries) {
-        if (e.type == "meta" || e.type == "summary") {
-            continue;
+    const float midY  = (barMin.y + barMax.y) * 0.5f;
+
+    auto drawPass = [&](bool composite) {
+        for (const auto& e : timeline.entries) {
+            const EventGroup group = GroupOf(e.type);
+            if ((group == EventGroup::Composite) != composite || !filter.Accepts(e)) {
+                continue;
+            }
+            const float frac = static_cast<float>((e.timeMs / 1000.0) / durationSec);
+            if (frac < 0.0f || frac > 1.0f) {
+                continue;
+            }
+            const float  x   = barMin.x + frac * width;
+            const ImU32  col = EventColor(e);
+
+            if (group == EventGroup::Audio) {
+                dl->AddLine(ImVec2(x, midY), ImVec2(x, barMax.y), col, 2.0f);
+            } else if (group == EventGroup::Video) {
+                dl->AddLine(ImVec2(x, barMin.y), ImVec2(x, midY), col, 2.0f);
+            } else {
+                dl->AddLine(ImVec2(x, barMin.y), ImVec2(x, barMax.y), col, 3.0f);
+            }
+
+            if (e.type == "stuck_candidate") {
+                // 最重要イベント。バー上に下向き三角を出して一目で見つかるようにする。
+                const float s = 5.0f;
+                dl->AddTriangleFilled(ImVec2(x - s, barMin.y - s * 1.6f),
+                                      ImVec2(x + s, barMin.y - s * 1.6f),
+                                      ImVec2(x, barMin.y), col);
+            }
         }
-        const double t = static_cast<double>(e.timeMs) / 1000.0;
-        const float frac = static_cast<float>(t / durationSec);
-        if (frac < 0.0f || frac > 1.0f) {
-            continue;
-        }
-        const float x = barMin.x + frac * width;
-        dl->AddLine(ImVec2(x, barMin.y), ImVec2(x, barMax.y), EventColor(e), 2.0f);
+    };
+    drawPass(false); // 音声・映像
+    drawPass(true);  // 合成（手前）
+}
+
+// type 別のマーカー表示 ON/OFF。グループごとに列を分けて並べる。
+void DrawFilterControls(TimelineFilter& filter) {
+    if (!ImGui::CollapsingHeader("マーカー表示")) {
+        return;
     }
+    auto column = [&](const char* title, EventGroup group) {
+        ImGui::BeginGroup();
+        ImGui::TextDisabled("%s", title);
+        for (int i = 0; i < kFilterCount; ++i) {
+            if (kFilterItems[i].group == group) {
+                ImGui::Checkbox(kFilterItems[i].label, &filter.visible[i]);
+            }
+        }
+        ImGui::EndGroup();
+    };
+    column("音声", EventGroup::Audio);
+    ImGui::SameLine(0.0f, 24.0f);
+    column("映像", EventGroup::Video);
+    ImGui::SameLine(0.0f, 24.0f);
+    column("合成", EventGroup::Composite);
+
+    ImGui::Checkbox("抑制されたイベントも表示 (集中状態と判定された無発話)", &filter.showSuppressed);
 }
 
 void DrawVideo(const DualPlayerController::SlotView& view, float maxWidth) {
@@ -146,7 +305,11 @@ void DrawVideo(const DualPlayerController::SlotView& view, float maxWidth) {
 
 } // namespace
 
-void DrawPlayerPanel(DualPlayerController& player, WindowFileDrop& drop, HWND owner) {
+void DrawPlayerPanel(DualPlayerController& player, WindowFileDrop& drop, HWND owner,
+                     AudioAnalysisPipeline* analysis) {
+    // マーカーのフィルタ状態はパネルをまたいで保持する（ビューアのセッション設定）。
+    static TimelineFilter filter;
+
     // OS ドロップされたファイルを取り込む。
     for (const auto& path : drop.PollDropped()) {
         HandleIncomingFile(player, path);
@@ -246,7 +409,7 @@ void DrawPlayerPanel(DualPlayerController& player, WindowFileDrop& drop, HWND ow
     const ImVec2 barMin = ImGui::GetItemRectMin();
     const ImVec2 barMax = ImGui::GetItemRectMax();
     if (player.HasTimeline()) {
-        DrawTimelineMarkers(barMin, barMax, player.GetTimeline(), duration);
+        DrawTimelineMarkers(barMin, barMax, player.GetTimeline(), duration, filter);
     }
 
     // --- AI 解析タイムライン（イベントリスト / 要約） ---
@@ -254,17 +417,58 @@ void DrawPlayerPanel(DualPlayerController& player, WindowFileDrop& drop, HWND ow
         const TimelineData& tl = player.GetTimeline();
         ImGui::SeparatorText("AI Analysis Timeline");
 
+        // 要約を生成ボタン: 開いているタイムライン(.jsonl)に対して on-demand で要約を実行する。
+        if (analysis != nullptr && !player.GetTimelinePath().empty()) {
+            const bool summarizing = analysis->IsSummarizing();
+            if (summarizing) {
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "要約生成中...");
+                // 生成完了を検知したらタイムラインを読み直して summary を反映する。
+                // （IsSummarizing が false に落ちた次フレームで ReloadTimeline される）
+            } else {
+                ImGui::BeginDisabled(!analysis->CanSummarize());
+                if (ImGui::Button(tl.summary.empty() ? "要約を生成" : "要約を再生成")) {
+                    analysis->SummarizeExisting(player.GetTimelinePath());
+                }
+                ImGui::EndDisabled();
+                if (!analysis->CanSummarize()) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(summarize モデル無効 / 録画中)");
+                }
+            }
+            // 直前フレームが要約中で、今フレーム完了していたらリロード。
+            static bool wasSummarizing = false;
+            if (wasSummarizing && !summarizing) {
+                player.ReloadTimeline();
+            }
+            wasSummarizing = summarizing;
+        }
+
         if (!tl.summary.empty()) {
             if (ImGui::CollapsingHeader("Session Summary", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::TextWrapped("%s", tl.summary.c_str());
             }
         }
 
-        ImGui::Text("%zu events", tl.entries.size());
+        DrawFilterControls(filter);
+
+        // meta / summary はマーカーにならないので母数から外す。
+        size_t shown = 0;
+        size_t total = 0;
+        for (const auto& e : tl.entries) {
+            if (FilterIndexOf(e.type) < 0) {
+                continue;
+            }
+            ++total;
+            if (filter.Accepts(e)) {
+                ++shown;
+            }
+        }
+        ImGui::Text("%zu / %zu events", shown, total);
+
         if (ImGui::BeginChild("##events", ImVec2(0, 200), true)) {
             for (size_t i = 0; i < tl.entries.size(); ++i) {
                 const TimelineEntry& e = tl.entries[i];
-                if (e.type == "meta") {
+                if (!filter.Accepts(e)) {
                     continue;
                 }
                 ImGui::PushID(static_cast<int>(i));
@@ -275,6 +479,16 @@ void DrawPlayerPanel(DualPlayerController& player, WindowFileDrop& drop, HWND ow
                     player.SeekMaster(static_cast<double>(e.timeMs) / 1000.0);
                 }
                 ImGui::PopStyleColor();
+
+                // 合成イベントは、根拠になった元イベントをホバーで確認できるようにする。
+                if (!e.sources.empty() && ImGui::IsItemHovered()) {
+                    ImGui::BeginTooltip();
+                    ImGui::TextDisabled("根拠となったイベント");
+                    for (const auto& s : e.sources) {
+                        ImGui::Text("%s  %s", FormatStamp(s.timeMs).c_str(), s.type.c_str());
+                    }
+                    ImGui::EndTooltip();
+                }
                 ImGui::PopID();
             }
         }
@@ -291,7 +505,8 @@ void DrawPlayerPanel(DualPlayerController& player, WindowFileDrop& drop, HWND ow
 namespace LogGuide {
 class DualPlayerController;
 class WindowFileDrop;
-void DrawPlayerPanel(DualPlayerController&, WindowFileDrop&, HWND) {}
+class AudioAnalysisPipeline;
+void DrawPlayerPanel(DualPlayerController&, WindowFileDrop&, HWND, AudioAnalysisPipeline*) {}
 } // namespace LogGuide
 
 #endif // _DEBUG

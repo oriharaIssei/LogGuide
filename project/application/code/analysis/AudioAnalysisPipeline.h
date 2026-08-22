@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -59,22 +60,40 @@ public:
     // 信号レベルのみで動くなら true。warnings に無効化理由を UTF-8 で積む。
     bool Initialize(const AnalysisConfig& config, std::vector<std::string>* warnings = nullptr);
 
-    // jsonlPath へ meta 行を書き、ワーカースレッドを起動する。録画開始と同時に呼ぶ。
-    bool Start(const std::string& jsonlPath, const std::string& sourceVideoName);
+    // タイムラインライタ（映像側と共有する）を受け取り、ワーカースレッドを起動する。
+    // 録画開始と同時に呼ぶ。meta 行の書き出しは呼び出し側の責務。
+    bool Start(std::shared_ptr<TimelineJsonlWriter> writer);
+
+    // 終了処理（ワーカ join → バッチ解析 → ライタ Close）の完了後に、その
+    // バックグラウンドスレッド上で呼ばれる。引数は書き終えた JSONL のパス。
+    // クロスモーダル相関のようなタイムライン全体を要する後処理をここに繋ぐ。
+    void SetOnFinalized(std::function<void(const std::string&)> callback);
 
     // マイク等のキャプチャスレッドから呼ばれる。samples は [-1,1] のインターリーブ float。
     void OnAudio(const float* samples, uint32_t frameCount, uint32_t channels, uint32_t sampleRate);
 
-    // ワーカーを止め、残りチャンクを処理し、（有効なら）要約バッチを実行して閉じる。
+    // 録画停止時に呼ぶ。重い終了処理（残チャンク処理・退避音声のバッチ解析・LLM 要約）は
+    // 別スレッドで走らせ、呼び出し元（UI スレッド）はブロックしない。
     void Stop();
 
     bool IsRunning() const { return running_.load(); }
+    // 終了処理（残チャンク・バッチ解析）がバックグラウンドで進行中か。
+    bool IsFinalizing() const { return finalizing_.load(); }
+
+    // 既存の .jsonl（ビューアで開いているタイムライン）を読み、その文字起こしから
+    // セッション要約を生成して summary イベントを追記する。録画停止時の自動実行ではなく、
+    // ユーザーがボタンで明示的に呼ぶための on-demand 版。別スレッドで走り UI をブロックしない。
+    // summarize モデル無効・録画中・要約中・文字起こし空なら false。
+    bool SummarizeExisting(const std::string& jsonlPath);
+    bool IsSummarizing() const { return summarizing_.load(); }
+    bool CanSummarize() const; // summarize モデルが有効で、今すぐ実行できるか
 
     // ---- 状態参照（UI 用） ----
     struct Status {
         bool     transcribeEnabled = false;
         bool     classifyEnabled   = false;
         bool     summarizeEnabled  = false;
+        bool     finalizing        = false; // 終了処理（バッチ解析・要約）が進行中
         int      degradeLevel      = 0;   // 0=通常 1=medium 2=解析停止
         double   lastRtf           = 0.0;
         uint64_t chunksProcessed   = 0;
@@ -85,6 +104,8 @@ public:
 
 private:
     void WorkerLoop();
+    // Stop から起動される終了処理本体（別スレッドで実行）。
+    void FinalizeStop();
     // 1 チャンクを処理し JSONL へ書く。GPU 縮退判定もここで行う。
     void ProcessChunk(const std::vector<float>& mono16k, int64_t startMs, int64_t durationMs,
                       bool hadSpeech, int64_t silenceRunMs);
@@ -94,7 +115,6 @@ private:
     void EnterAnalysisStopped(int64_t nowMs);
     // 終了後バッチ解析: 退避した音声をまとめて処理する。
     void RunBatchAnalysis();
-    void RunSummarize();
 
     // 16kHz モノへの変換（キャプチャスレッドで実行）。
     void ToMono16k(const float* samples, uint32_t frameCount, uint32_t channels,
@@ -105,7 +125,7 @@ private:
     std::unique_ptr<WhisperTranscriber> whisper_;
     std::unique_ptr<LocalLLM>            classifyLlm_;
     std::unique_ptr<LocalLLM>            summarizeLlm_;
-    std::unique_ptr<TimelineJsonlWriter> writer_;
+    std::shared_ptr<TimelineJsonlWriter> writer_; // 映像解析パイプラインと共有する
     std::unique_ptr<SpeechChunkSplitter> splitter_;
     std::unique_ptr<SignalEventDetector> signals_;
     std::unique_ptr<TranscriptClassifier> classifier_;
@@ -119,7 +139,11 @@ private:
     std::deque<float>       inputQueue_;
 
     std::thread        worker_;
+    std::thread        finalizeThread_;
+    std::thread        summarizeThread_;
     std::atomic<bool>  running_{false};
+    std::atomic<bool>  finalizing_{false};
+    std::atomic<bool>  summarizing_{false};
     std::atomic<bool>  stopRequested_{false};
 
     // GPU 縮退状態。
@@ -141,7 +165,8 @@ private:
     std::atomic<uint64_t> speechEvents_{0};
     std::atomic<double>   lastRtf_{0.0};
 
-    std::string sourceVideoName_;
+    std::string jsonlPath_;   // 終了コールバックへ渡すために Start で控える
+    std::function<void(const std::string&)> onFinalized_;
 };
 
 } // namespace LogGuide

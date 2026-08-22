@@ -79,7 +79,8 @@ void LogGuideEditor::Run() {
         EditorController::GetInstance()->Update();
         LogGuide::DrawRecordingPanel(*recordingSystem_);
         playerController_->Update();
-        LogGuide::DrawPlayerPanel(*playerController_, *fileDrop_, engine_->GetWinApp()->GetHwnd());
+        LogGuide::DrawPlayerPanel(*playerController_, *fileDrop_, engine_->GetWinApp()->GetHwnd(),
+                                  recordingSystem_->Analysis());
         engine_->EndFrame();
 
         engine_->ScreenPreDraw();

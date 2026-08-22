@@ -3,6 +3,8 @@
 #ifdef _DEBUG
 
 /// module
+#include "analysis/AudioAnalysisPipeline.h"
+#include "analysis/VideoAnalysisPipeline.h"
 #include "recording/RecordingSystem.h"
 
 /// externals
@@ -125,6 +127,48 @@ void DrawRecordingPanel(RecordingSystem& system) {
 
     if (!system.GetLastError().empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Error: %s", system.GetLastError().c_str());
+    }
+
+    // --- AI 解析の状態 ---
+    if (const AudioAnalysisPipeline* analysis = system.Analysis()) {
+        const AudioAnalysisPipeline::Status st = analysis->GetStatus();
+        ImGui::SeparatorText("AI Analysis");
+        if (st.finalizing) {
+            // 録画停止後、要約・バッチ解析がバックグラウンドで進行中（UI はブロックしない）。
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
+                               "解析処理中... (要約生成 / 残チャンク解析)");
+        } else if (recording) {
+            const char* deg = st.degradeLevel == 0 ? "normal"
+                            : st.degradeLevel == 1 ? "medium(GPU逼迫)"
+                                                   : "解析停止(録音のみ)";
+            ImGui::Text("録画解析中: chunks=%llu speech=%llu RTF=%.2f [%s]",
+                        static_cast<unsigned long long>(st.chunksProcessed),
+                        static_cast<unsigned long long>(st.speechEvents),
+                        st.lastRtf, deg);
+        } else {
+            ImGui::Text("待機中 (transcribe=%d classify=%d summarize=%d)",
+                        st.transcribeEnabled ? 1 : 0, st.classifyEnabled ? 1 : 0,
+                        st.summarizeEnabled ? 1 : 0);
+        }
+
+        // 映像シグナル解析。diff の実測値を出す（logguide.toml の static_threshold 調整用）。
+        if (const VideoAnalysisPipeline* video = system.VideoAnalysis()) {
+            const VideoAnalysisPipeline::Status vs = video->GetStatus();
+            if (!vs.enabled) {
+                ImGui::TextDisabled("映像解析: 無効");
+            } else if (vs.running) {
+                ImGui::Text("映像解析中: samples=%llu events=%llu diff=%.4f",
+                            static_cast<unsigned long long>(vs.samples),
+                            static_cast<unsigned long long>(vs.events), vs.lastDiff);
+            } else {
+                ImGui::Text("映像解析: 待機中");
+            }
+        }
+
+        // モデル欠落などで無効化された機能の警告。
+        for (const auto& w : system.AnalysisWarnings()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "⚠ %s", w.c_str());
+        }
     }
 
     // --- 直近セッションの結果 ---

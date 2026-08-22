@@ -43,3 +43,6 @@ Thumbs.db
 /project/config/premake5.exe
 project/imgui.ini
 /project/application/externals
+*.log
+*.bat
+/.serena

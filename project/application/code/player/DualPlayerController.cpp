@@ -85,15 +85,27 @@ void DualPlayerController::LoadTimelineFor(const std::string& mediaPath) {
     const std::string sidecar = TimelineJsonlReader::SidecarPathFor(mediaPath);
     TimelineData loaded = TimelineJsonlReader::LoadFromFile(sidecar);
     if (!loaded.Empty()) {
-        timeline_ = std::move(loaded);
+        timeline_     = std::move(loaded);
+        timelinePath_ = sidecar;
         LOG_INFO("DualPlayerController: loaded timeline '{}' ({} events)",
                  sidecar, timeline_.entries.size());
+    }
+}
+
+void DualPlayerController::ReloadTimeline() {
+    if (timelinePath_.empty()) {
+        return;
+    }
+    TimelineData loaded = TimelineJsonlReader::LoadFromFile(timelinePath_);
+    if (!loaded.Empty()) {
+        timeline_ = std::move(loaded);
     }
 }
 
 bool DualPlayerController::OpenSession(const std::string& sessionJsonPath) {
     lastError_.clear();
     timeline_ = {}; // セッションを開き直すので前のタイムラインを破棄する。
+    timelinePath_.clear();
 
     SessionInfo session;
     std::string err;
