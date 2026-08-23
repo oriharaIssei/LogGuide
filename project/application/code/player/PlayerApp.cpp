@@ -1,5 +1,9 @@
 #include "PlayerApp.h"
 
+/// stl
+#include <cctype>
+#include <string>
+
 #define ENGINE_INCLUDE
 #define RESOURCE_DIRECTORY
 #include <EngineInclude.h>
@@ -31,6 +35,24 @@
 
 using namespace OriGine;
 
+namespace {
+
+// PlayerPanel のドラッグ&ドロップ処理と同じ判定。
+// session.json ならセッション（camera/screen の 2 本）として、
+// それ以外（mp4）なら単体動画としてスロット 0 に読み込む。
+bool HasJsonExtension(const std::string& path) {
+    if (path.size() < 5) {
+        return false;
+    }
+    std::string tail = path.substr(path.size() - 5);
+    for (auto& c : tail) {
+        c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+    }
+    return tail == ".json";
+}
+
+} // namespace
+
 PlayerApp::PlayerApp()  = default;
 PlayerApp::~PlayerApp() = default;
 
@@ -41,8 +63,6 @@ void PlayerApp::Initialize(const std::vector<std::string>& _commandLines) {
 
     variables_->LoadAllFile();
     engine_->Initialize();
-
-    (void)_commandLines;
 
     RegisterUsingComponents();
     RegisterUsingSystems();
@@ -64,6 +84,22 @@ void PlayerApp::Initialize(const std::vector<std::string>& _commandLines) {
 
     playerController_ = std::make_unique<LogGuide::DualPlayerController>();
     playerController_->Initialize();
+
+    // ターミナル（LogGuideTerminal）から起動された場合、開くセッションが
+    // 引数で渡される。[0] は exe 自身のパスなので実引数は [1] から。
+    // 引数無しで起動されたときは何も開かず、UI から選ばせる。
+    if (_commandLines.size() > 1 && !_commandLines[1].empty()) {
+        const std::string& target = _commandLines[1];
+        const bool opened = HasJsonExtension(target)
+                                ? playerController_->OpenSession(target)
+                                : playerController_->OpenSlot(0, target);
+        if (opened) {
+            LOG_INFO("PlayerApp: opened '{}' from command line", target);
+        } else {
+            LOG_WARN("PlayerApp: failed to open '{}': {}", target,
+                     playerController_->GetLastError());
+        }
+    }
 
     fileDrop_ = std::make_unique<LogGuide::WindowFileDrop>();
     fileDrop_->Initialize(engine_->GetWinApp()->GetHwnd());

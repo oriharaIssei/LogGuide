@@ -21,17 +21,25 @@ Application-Template/
     │   └── premake.lua.example   # Engine 側に用意すべき premake.lua の参考
     └── application/
         ├── code/
-        │   ├── shared/          # LogGuideCore (StaticLib) — 両アプリが共有
+        │   ├── shared/          # LogGuideCore (StaticLib) — 全アプリが共有
         │   │   ├── FrameWork.{h,cpp}
         │   │   ├── analysis/    # AnalysisConfig, TimelineEvent, TimelineJsonl{Reader,Writer},
         │   │   │                #  LocalLLM, SessionSummarizer
+        │   │   ├── recording/   # RecordingComponents (SessionInfo/TrackInfo),
+        │   │   │                #  SessionManifest (session.json の読み書き)
         │   │   ├── component/ComponentTemplate.txt
         │   │   ├── system/SystemTemplate.txt
         │   │   └── manager/
+        │   ├── terminal/        # LogGuideTerminal.exe — スタートアップのランチャー
+        │   │   ├── main.cpp
+        │   │   ├── TerminalApp.{h,cpp}
+        │   │   ├── TerminalPanel.{h,cpp}   # 起動先を選ぶ ImGui UI
+        │   │   ├── SessionCatalog.{h,cpp}  # recordings/ の走査
+        │   │   └── AppLauncher.{h,cpp}     # 兄弟 exe の起動
         │   ├── recorder/        # LogGuideRecorder.exe — 録画アプリ
         │   │   ├── main.cpp
         │   │   ├── RecorderApp.{h,cpp}
-        │   │   ├── recording/   # RecordingSystem, RecordingPanel, SessionManifest
+        │   │   ├── recording/   # RecordingSystem, RecordingPanel
         │   │   └── analysis/    # AudioAnalysisPipeline, VideoAnalysisPipeline,
         │   │                    #  WhisperTranscriber, CrossModalCorrelator ほか
         │   └── player/          # LogGuidePlayer.exe — 再生アプリ
@@ -48,16 +56,32 @@ Application-Template/
 
 ## アプリケーション構成
 
-LogGuide は **録画** と **再生** の 2 つの独立した実行ファイルに分かれています。
+LogGuide は **ターミナル**・**録画**・**再生** の 3 つの独立した実行ファイルに分かれています。
 
 | プロジェクト       | 種別        | 役割                                                           | 外部依存                 |
 | ------------------ | ----------- | -------------------------------------------------------------- | ------------------------ |
-| `LogGuideCore`     | StaticLib   | 両アプリ共有 (FrameWork / タイムライン JSONL / LocalLLM)        | llama.cpp                |
+| `LogGuideCore`     | StaticLib   | 全アプリ共有 (FrameWork / タイムライン JSONL / session.json / LocalLLM) | llama.cpp        |
+| `LogGuideTerminal` | WindowedApp | スタートアップのランチャー。録画/再生を選んで起動する           | なし                     |
 | `LogGuideRecorder` | WindowedApp | 画面・カメラ・音声のキャプチャと録画中のリアルタイム AI 解析    | whisper.cpp + llama.cpp  |
 | `LogGuidePlayer`   | WindowedApp | camera.mp4 / screen.mp4 の同期再生とタイムライン閲覧・要約生成  | llama.cpp                |
 
+### 起動フロー
+
+```
+LogGuideTerminal.exe          ← スタートアッププロジェクト
+   ├─ [レコーダーを起動]  → LogGuideRecorder.exe
+   └─ [セッションを選択]  → LogGuidePlayer.exe "<recordings/session_*/session.json>"
+                              ↑ 引数を渡すとそのセッションを開いた状態で起動する
+```
+
+ターミナルは起動したら自身を終了します。3 つの exe は同じ出力ディレクトリに並ぶため、
+ターミナルは自分の exe と同じ場所から兄弟 exe を探して起動します。
+作業ディレクトリ (`project/`) は子プロセスへ引き継がれます。
+
 再生アプリは文字起こしを行わないため whisper.cpp をリンクしません。
 「要約を生成」だけは `SummaryService` (LocalLLM) が担当します。
+ターミナルは `LogGuideCore` をリンクしますが、参照するのは `SessionManifest` と
+`FrameWork` だけなので llama.cpp は不要です。
 
 両アプリの作業ディレクトリは `project/` で共通のため、ImGui のウィンドウ配置は
 `imgui_recorder.ini` / `imgui_player.ini` に分けています。
@@ -95,9 +119,9 @@ cd MyGame
 
 `project/LogGuide.slnx` を Visual Studio で開き、`Debug` / `Develop` / `Release` のいずれかをビルド。
 
-スタートアッププロジェクトの既定は `LogGuideRecorder` です。再生アプリを起動する場合は
-ソリューションエクスプローラで `LogGuidePlayer` をスタートアップに設定してください。
-どちらの exe も `generated/output/<構成>/` に出力されます。
+スタートアッププロジェクトは `LogGuideTerminal` です。ここから録画/再生を選んで起動します。
+個別に起動したい場合はソリューションエクスプローラで該当プロジェクトを
+スタートアップに設定してください。3 つの exe はすべて `generated/output/<構成>/` に出力されます。
 
 ---
 

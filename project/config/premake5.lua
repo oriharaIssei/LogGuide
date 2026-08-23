@@ -1,11 +1,12 @@
 -- ==========================================================================
 -- LogGuide Workspace Premake5 Script
 -- ==========================================================================
--- LogGuide は「録画アプリ」と「再生アプリ」の 2 つの独立した実行ファイルで構成される。
+-- LogGuide は 3 つの独立した実行ファイルで構成される。
 --
---   LogGuideCore     (StaticLib)   両アプリが共有するコード
+--   LogGuideCore     (StaticLib)   全アプリが共有するコード
 --                                  FrameWork / タイムライン JSONL / AnalysisConfig /
---                                  LocalLLM / SessionSummarizer
+--                                  LocalLLM / SessionSummarizer / SessionManifest
+--   LogGuideTerminal (WindowedApp) スタートアップのランチャー。録画/再生を選んで起動する
 --   LogGuideRecorder (WindowedApp) 録画とリアルタイム解析。whisper.cpp + llama.cpp
 --   LogGuidePlayer   (WindowedApp) 2 動画同期再生とタイムライン閲覧。llama.cpp のみ
 --
@@ -23,7 +24,7 @@ include "engine/premake.lua"
 workspace "LogGuide"
     architecture "x86_64"
     configurations { "Debug", "Develop", "Release" }
-    startproject "LogGuideRecorder"
+    startproject "LogGuideTerminal"
 
 -- ==========================================================================
 -- Engine Projects (Engine 側の premake.lua が定義する)
@@ -140,6 +141,51 @@ project "LogGuideCore"
     ))
 
     applyCommonBuildSettings()
+
+-- ==========================================================================
+-- LogGuideTerminal : スタートアップのランチャー
+-- --------------------------------------------------------------------------
+-- 録画アプリを起動するか、録画セッションを選んで再生アプリを起動するかを選ばせ、
+-- 起動したら自身は終了する。3 つの exe は同じ出力ディレクトリに並ぶため、
+-- 自分の exe と同じ場所から兄弟 exe を探して CreateProcess する。
+--
+-- whisper.cpp / llama.cpp はリンクしない。LogGuideCore は静的ライブラリなので、
+-- 参照していないオブジェクト (LocalLLM 等) はリンカに取り込まれず、
+-- ランチャーが必要とするのは SessionManifest と FrameWork だけで済む。
+-- ==========================================================================
+project "LogGuideTerminal"
+    kind "WindowedApp"
+    language "C++"
+    location "application"
+    targetdir "../generated/output/%{cfg.buildcfg}/"
+    objdir "../generated/obj/%{cfg.buildcfg}/LogGuideTerminal/"
+    debugdir "%{wks.location}"
+
+    files {
+        "application/code/terminal/**.h",
+        "application/code/terminal/**.cpp",
+    }
+
+    clangtidy "On"
+
+    includedirs(table.join(
+        {
+            "$(ProjectDir)code/shared",
+            "$(ProjectDir)code/terminal",
+            "$(ProjectDir)",
+        },
+        getEngineIncludeDirs()
+    ))
+
+    dependson { "LogGuideCore", "OriGine", "DirectXTex", "imgui" }
+
+    links(table.join(
+        { "LogGuideCore", "OriGine" },
+        getEngineLinks()
+    ))
+
+    applyCommonBuildSettings()
+    applyAssimpLinks()
 
 -- ==========================================================================
 -- LogGuideRecorder : 録画アプリ
