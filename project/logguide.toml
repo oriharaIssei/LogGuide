@@ -1,0 +1,76 @@
+# =============================================================================
+# LogGuide AI 解析パイプライン設定
+#
+# パスは実行時の作業ディレクトリ（= project/）からの相対、または絶対パス。
+# model が空文字列 "" の役割はその機能を無効化する（信号レベル検出のみで動作）。
+# モデルファイルが存在しない場合は起動時に警告し、該当機能を無効化して続行する。
+# =============================================================================
+
+[whisper]
+# 文字起こしの主モデル（large）。空にすると文字起こし自体を無効化する。
+model        = "application/resource/whisper/ggml-large-v3.bin"
+# GPU 逼迫時のフォールバック（medium）。未配置なら空のままでよい（縮退時 large 継続）。
+model_medium = ""
+# Silero VAD モデル。空だと whisper 内蔵の無音判定に任せる。
+vad_model    = "application/resource/whisper/ggml-silero-v6.2.0.bin"
+language     = "ja"
+
+[analysis]
+enabled                = true
+chunk_min_sec          = 10
+chunk_max_sec          = 30
+silence_threshold_sec  = 60
+vad_threshold          = 0.5
+volume_spike_z         = 3.0
+density_window_sec     = 20
+density_burst_count    = 5
+chunk_sleep_ms         = 200
+rtf_fallback_threshold = 1.0
+
+[video_analysis]
+# 画面キャプチャのフレーム差分から映像シグナルを検出する（CPU のみ / GPU 不使用）。
+# false にすると従来どおり音声のみで解析する。
+enabled                = true
+sample_fps             = 3      # 差分を測るサンプリングレート
+downscale_width        = 160    # 差分計算用のダウンスケール幅（高さはアスペクト比維持）
+static_threshold       = 0.02   # 正規化差分量。これ以下なら「動きなし」
+static_duration_ms     = 30000  # 動きなしがこの時間続いたら screen_static_start
+static_exit_ms         = 1500   # 停滞の解除に必要な連続活動時間。ノベル等でテキスト送りの
+                                # 一瞬の変化により停滞が細切れになるのを防ぐヒステリシス
+blank_luma_threshold   = 0.05   # 平均輝度がこの下 / 上（1-x）で一様なら暗転・白飛び
+blank_duration_ms      = 1000   # 単色フレームがこの時間続いたら screen_blank_start
+transition_z           = 3.0    # 差分量の z スコアがこれ以上なら画面遷移。固定しきい値に
+                                # しないのは、画面が常に動くアクションと静的なノベルで
+                                # 「遷移」の絶対値が桁違いになるため
+transition_debounce_ms = 1000   # 画面遷移検出の最小間隔
+thrash_window_ms       = 10000  # この窓に
+thrash_count           = 4      # これだけ遷移が集中したら screen_thrash
+thrash_cooldown_ms     = 15000  # screen_thrash の最小間隔
+warmup_samples         = 10     # z スコア判定を始めるまでに貯めるサンプル数
+
+[correlation]
+# 音声イベント × 映像イベントの相関（録画終了後に一度だけ遅延評価する）。
+enabled               = true
+stuck_min_overlap_ms  = 15000 # 無発話と画面停滞の重複がこれ以上で stuck_candidate
+reaction_window_ms    = 5000  # 画面遷移からこの時間内の confusion/surprise で unexpected_reaction
+focus_min_duration_ms = 30000 # 無発話がこの長さ以上で focus_likely の候補
+focus_min_transitions = 1     # かつ区間内にこれだけ画面遷移があれば「集中」とみなす
+
+[llm.classify]
+# 意味レベル検出（発話分類）。空 "" で無効化 → 信号レベルのみ。
+model       = "application/resource/llm/models/Qwen3-4B-Q4_K_M.gguf"
+max_tokens  = 128
+gpu_layers  = 99
+context_size = 2048
+
+[llm.summarize]
+# 録画終了後のセッション要約（バッチ）。空 "" で無効化。
+model       = "application/resource/llm/models/Qwen3-4B-Q4_K_M.gguf"
+max_tokens  = 2048
+gpu_layers  = 99
+context_size = 8192
+
+[llm.report]
+# レポート生成（将来機能）。既定は無効。
+model       = ""
+max_tokens  = 2048

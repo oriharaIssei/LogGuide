@@ -12,23 +12,29 @@
 #include "directX12/DxSwapChain.h"
 #include "globalVariables/GlobalVariables.h"
 
+/// app
+#include "ui/UiRegistration.h"
+
 using namespace OriGine;
 
-FrameWork::FrameWork()  = default;
+FrameWork::FrameWork() = default;
 FrameWork::~FrameWork() = default;
 
-void FrameWork::ApplyWindowSettings() {
+void FrameWork::ApplyWindowSettings()
+{
 #ifdef _DEBUG
     return;
 #endif
 
-    GlobalVariables* gv = GlobalVariables::GetInstance();
-    auto* scene = gv->GetScene("Settings");
-    if (!scene) {
+    GlobalVariables *gv = GlobalVariables::GetInstance();
+    auto *scene = gv->GetScene("Settings");
+    if (!scene)
+    {
         return;
     }
     auto groupItr = scene->find("WindowState");
-    if (groupItr == scene->end()) {
+    if (groupItr == scene->end())
+    {
         return;
     }
 
@@ -39,20 +45,15 @@ void FrameWork::ApplyWindowSettings() {
     Engine::GetInstance()->GetDxSwapChain()->SetClearColor(Vec4f(r, g, b, a));
 }
 
-void RegisterUsingComponents() {
-    ComponentRegistry* componentRegistry = ComponentRegistry::GetInstance();
-    (void)componentRegistry;
-
-    // TODO: アプリ固有のコンポーネントを登録
-    // 例:
-    // componentRegistry->RegisterComponent<Transform>();
+void RegisterUsingComponents()
+{
+    ComponentRegistry *componentRegistry = ComponentRegistry::GetInstance();
+    LogGuide::RegisterUiComponents();
 }
 
-void RegisterUsingSystems() {
-    SystemRegistry* systemRegistry = SystemRegistry::GetInstance();
-    (void)systemRegistry;
+void RegisterUsingSystems()
+{
+    SystemRegistry *systemRegistry = SystemRegistry::GetInstance();
 
-    // TODO: アプリ固有のシステムを登録
-    // 例:
-    // systemRegistry->RegisterSystem<MoveSystem>();
+    LogGuide::RegisterUiSystems();
 }
