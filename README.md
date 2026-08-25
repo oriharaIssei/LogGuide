@@ -21,18 +21,74 @@ Application-Template/
     │   └── premake.lua.example   # Engine 側に用意すべき premake.lua の参考
     └── application/
         ├── code/
-        │   ├── main.cpp
-        │   ├── FrameWork.{h,cpp}
-        │   ├── LogGuideEditor.{h,cpp}
-        │   ├── LogGuideGame.{h,cpp}
-        │   ├── component/ComponentTemplate.txt
-        │   ├── system/SystemTemplate.txt
-        │   └── manager/
-        └── resource/
+        │   ├── shared/          # LogGuideCore (StaticLib) — 全アプリが共有
+        │   │   ├── FrameWork.{h,cpp}
+        │   │   ├── analysis/    # AnalysisConfig, TimelineEvent, TimelineJsonl{Reader,Writer},
+        │   │   │                #  LocalLLM, SessionSummarizer
+        │   │   ├── recording/   # RecordingComponents (SessionInfo/TrackInfo),
+        │   │   │                #  SessionManifest (session.json の読み書き)
+        │   │   ├── component/ComponentTemplate.txt
+        │   │   ├── system/SystemTemplate.txt
+        │   │   └── manager/
+        │   ├── terminal/        # LogGuideTerminal.exe — スタートアップのランチャー
+        │   │   ├── main.cpp
+        │   │   ├── TerminalApp.{h,cpp}
+        │   │   ├── TerminalPanel.{h,cpp}   # 起動先を選ぶ ImGui UI
+        │   │   ├── SessionCatalog.{h,cpp}  # recordings/ の走査
+        │   │   └── AppLauncher.{h,cpp}     # 兄弟 exe の起動
+        │   ├── recorder/        # LogGuideRecorder.exe — 録画アプリ
+        │   │   ├── main.cpp
+        │   │   ├── RecorderApp.{h,cpp}
+        │   │   ├── recording/   # RecordingSystem, RecordingPanel
+        │   │   └── analysis/    # AudioAnalysisPipeline, VideoAnalysisPipeline,
+        │   │                    #  WhisperTranscriber, CrossModalCorrelator ほか
+        │   └── player/          # LogGuidePlayer.exe — 再生アプリ
+        │       ├── main.cpp
+        │       ├── PlayerApp.{h,cpp}
+        │       ├── playback/    # DualPlayerController, PlayerPanel, VideoTexture, FileDialog
+        │       └── analysis/    # SummaryService
+        ├── externals/           # whisper.cpp / llama.cpp (CUDA 付きで別途 CMake ビルド)
+        └── resource/            # whisper / llm モデル, GlobalVariables
         # cookedResource/ は AssetCooker による成果物のためローカル生成 (gitignore)
 ```
 
-`LogGuide` は `setup.ps1` 実行時にプロジェクト名に置換されます。
+---
+
+## アプリケーション構成
+
+LogGuide は **ターミナル**・**録画**・**再生** の 3 つの独立した実行ファイルに分かれています。
+
+| プロジェクト       | 種別        | 役割                                                           | 外部依存                 |
+| ------------------ | ----------- | -------------------------------------------------------------- | ------------------------ |
+| `LogGuideCore`     | StaticLib   | 全アプリ共有 (FrameWork / タイムライン JSONL / session.json / LocalLLM) | llama.cpp        |
+| `LogGuideTerminal` | WindowedApp | スタートアップのランチャー。録画/再生を選んで起動する           | なし                     |
+| `LogGuideRecorder` | WindowedApp | 画面・カメラ・音声のキャプチャと録画中のリアルタイム AI 解析    | whisper.cpp + llama.cpp  |
+| `LogGuidePlayer`   | WindowedApp | camera.mp4 / screen.mp4 の同期再生とタイムライン閲覧・要約生成  | llama.cpp                |
+
+### 起動フロー
+
+```
+LogGuideTerminal.exe          ← スタートアッププロジェクト
+   ├─ [レコーダーを起動]  → LogGuideRecorder.exe
+   └─ [セッションを選択]  → LogGuidePlayer.exe "<recordings/session_*/session.json>"
+                              ↑ 引数を渡すとそのセッションを開いた状態で起動する
+```
+
+ターミナルは起動したら自身を終了します。3 つの exe は同じ出力ディレクトリに並ぶため、
+ターミナルは自分の exe と同じ場所から兄弟 exe を探して起動します。
+作業ディレクトリ (`project/`) は子プロセスへ引き継がれます。
+
+再生アプリは文字起こしを行わないため whisper.cpp をリンクしません。
+「要約を生成」だけは `SummaryService` (LocalLLM) が担当します。
+ターミナルは `LogGuideCore` をリンクしますが、参照するのは `SessionManifest` と
+`FrameWork` だけなので llama.cpp は不要です。
+
+両アプリの作業ディレクトリは `project/` で共通のため、ImGui のウィンドウ配置は
+`imgui_recorder.ini` / `imgui_player.ini` に分けています。
+
+> UI (ImGui / EditorController) はエンジン側が `_DEBUG` 限定のため、
+> パネルが表示されるのは **Debug 構成のみ**です。Develop / Release でも
+> ビルドとリンクは通ります。
 
 ---
 
@@ -61,7 +117,11 @@ cd MyGame
 
 ### 3. ビルド
 
-`project/MyGame.sln` を Visual Studio で開き、`Debug` / `Develop` / `Release` のいずれかをビルド。
+`project/LogGuide.slnx` を Visual Studio で開き、`Debug` / `Develop` / `Release` のいずれかをビルド。
+
+スタートアッププロジェクトは `LogGuideTerminal` です。ここから録画/再生を選んで起動します。
+個別に起動したい場合はソリューションエクスプローラで該当プロジェクトを
+スタートアップに設定してください。3 つの exe はすべて `generated/output/<構成>/` に出力されます。
 
 ---
 

@@ -1,36 +1,33 @@
-﻿#include "LogGuideEditor.h"
+#include "RecorderApp.h"
 
-#ifdef _DEBUG
+/// engine
 #define ENGINE_INCLUDE
 #define RESOURCE_DIRECTORY
 #include <EngineInclude.h>
 
 #include "globalVariables/GlobalVariables.h"
 #include "scene/SceneManager.h"
+#include "winApp/WinApp.h"
 
+/// recording
+#include "recording/RecordingSystem.h"
+
+#ifdef _DEBUG
 #include "editor/EditorController.h"
 #include "editor/sceneEditor/SceneEditor.h"
 #include "editor/setting/SettingWindow.h"
-#include "logger/Logger.h"
 
-/// recording (ImGui 最小デモ)
+/// recording panel (ImGui 最小デモ)
 #include "recording/RecordingPanel.h"
-#include "recording/RecordingSystem.h"
-
-/// player (2 動画同期再生デモ)
-#include "player/DualPlayerController.h"
-#include "player/FileDialog.h"
-#include "player/PlayerPanel.h"
-
-/// engine (window handle)
-#include "winApp/WinApp.h"
+#include <imgui/imgui.h>
+#endif // _DEBUG
 
 using namespace OriGine;
 
-LogGuideEditor::LogGuideEditor()  = default;
-LogGuideEditor::~LogGuideEditor() = default;
+RecorderApp::RecorderApp()  = default;
+RecorderApp::~RecorderApp() = default;
 
-void LogGuideEditor::Initialize(const std::vector<std::string>& _commandLines) {
+void RecorderApp::Initialize(const std::vector<std::string>& _commandLines) {
     variables_    = GlobalVariables::GetInstance();
     engine_       = Engine::GetInstance();
     sceneManager_ = std::make_unique<SceneManager>();
@@ -45,30 +42,35 @@ void LogGuideEditor::Initialize(const std::vector<std::string>& _commandLines) {
 
     ApplyWindowSettings();
 
+#ifdef _DEBUG
+    // 再生アプリと作業ディレクトリを共有するため、ウィンドウ配置の ini を分ける。
+    ImGui::GetIO().IniFilename = "imgui_recorder.ini";
+
     EditorController::GetInstance()->AddEditor<SceneEditorWindow>(std::make_unique<SceneEditorWindow>());
     EditorController::GetInstance()->AddEditor<SettingWindow>(std::make_unique<SettingWindow>());
     EditorController::GetInstance()->Initialize();
+#endif // _DEBUG
+
+    // 再生アプリと見分けられるようウィンドウタイトルを変更する。
+    engine_->GetWinApp()->SetWindowTitle(L"LogGuide Recorder");
 
     recordingSystem_ = std::make_unique<LogGuide::RecordingSystem>();
     recordingSystem_->Initialize(engine_);
-
-    playerController_ = std::make_unique<LogGuide::DualPlayerController>();
-    playerController_->Initialize();
-
-    fileDrop_ = std::make_unique<LogGuide::WindowFileDrop>();
-    fileDrop_->Initialize(engine_->GetWinApp()->GetHwnd());
 }
 
-void LogGuideEditor::Finalize() {
-    fileDrop_.reset();
-    playerController_.reset();
+void RecorderApp::Finalize() {
+    // RecordingSystem のデストラクタが内部で Finalize（録画中なら停止）を行う。
     recordingSystem_.reset();
+
+#ifdef _DEBUG
     EditorController::GetInstance()->Finalize();
+#endif // _DEBUG
+
     sceneManager_.reset();
     engine_->Finalize();
 }
 
-void LogGuideEditor::Run() {
+void RecorderApp::Run() {
     while (!isEndRequest_) {
         if (engine_->ProcessMessage()) {
             isEndRequest_ = true;
@@ -76,16 +78,13 @@ void LogGuideEditor::Run() {
         }
 
         engine_->BeginFrame();
+#ifdef _DEBUG
         EditorController::GetInstance()->Update();
         LogGuide::DrawRecordingPanel(*recordingSystem_);
-        playerController_->Update();
-        LogGuide::DrawPlayerPanel(*playerController_, *fileDrop_, engine_->GetWinApp()->GetHwnd(),
-                                  recordingSystem_->Analysis());
+#endif // _DEBUG
         engine_->EndFrame();
 
         engine_->ScreenPreDraw();
         engine_->ScreenPostDraw();
     }
 }
-
-#endif // _DEBUG

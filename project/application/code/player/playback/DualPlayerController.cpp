@@ -1,4 +1,4 @@
-#include "player/DualPlayerController.h"
+#include "playback/DualPlayerController.h"
 
 /// module
 #include "recording/SessionManifest.h"
