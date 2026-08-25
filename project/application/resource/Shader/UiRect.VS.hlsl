@@ -5,7 +5,7 @@ StructuredBuffer<UiRectInstance> gInstances : register(t0);
 /// 頂点バッファを使わず、SV_VertexID から矩形を組み立てる.
 /// トポロジは TRIANGLELIST、1 矩形あたり 6 頂点.
 VSOutput main(uint _vertexId : SV_VertexID, uint _instanceId : SV_InstanceID) {
-    UiRectInstance inst = gInstances[_instanceId];
+    UiRectInstance inst = gInstances[instanceOffset + _instanceId];
 
     // (0,0) (1,0) (0,1) / (0,1) (1,0) (1,1)
     const float2 kCorners[6] = {

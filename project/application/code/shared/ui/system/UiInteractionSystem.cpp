@@ -57,9 +57,11 @@ void UiInteractionSystem::Update() {
 
         // 手前にあるものを優先する。同じ priority のときは後に見た方を採用する
         // （entities_ の順序は安定なので結果は毎フレーム同じになる）
-        if (inside && (hoverTarget == nullptr || transform->renderPriority >= bestPriority)) {
+        // ウィンドウが前面化するとその子孫もまとめて前後するよう、階層で加算済みの
+        // resolvedPriority で比較する。
+        if (inside && (hoverTarget == nullptr || transform->resolvedPriority >= bestPriority)) {
             hoverTarget  = interactable;
-            bestPriority = transform->renderPriority;
+            bestPriority = transform->resolvedPriority;
         }
     }
 

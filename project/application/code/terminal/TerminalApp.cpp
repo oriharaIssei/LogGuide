@@ -30,11 +30,15 @@
 #include "ui/system/UiHighlightSystem.h"
 #include "ui/system/UiInteractionSystem.h"
 #include "ui/system/UiLayoutSystem.h"
-#include "ui/system/UiRectRenderSystem.h"
+#include "ui/system/UiRenderSystem.h"
+/// UI（v6: ウィンドウの移動/前面化。UiWindowBuilder がウィンドウ 1 枚分の 3 エンティティを組み立てる）
+#include "ui/UiWindowBuilder.h"
+#include "ui/system/UiWindowSystem.h"
 
-/// UI（v2: テキスト描画は自作せず engine の TextComponent / TextRenderSystem をそのまま使う）
+/// UI（v2: テキストのコンポーネントは engine の TextComponent をそのまま使う。
+/// v5: 描画はクリップ矩形付きで描ける自作の UiTextRenderSystem に乗り換えた。
+/// v7: UiTextRenderSystem は UiRectRenderSystem と統合されて UiRenderSystem になった）
 #include "component/text/TextComponent.h"
-#include "system/text/TextRenderSystem.h"
 
 #ifdef _DEBUG
 /// externals
@@ -98,81 +102,89 @@ void TerminalApp::Initialize(const std::vector<std::string>& _commandLines) {
 
     SystemRunner* runner = scene_->GetSystemRunnerRef();
     runner->RegisterSystem<LogGuide::UiLayoutSystem>(0, true, true);
-    runner->RegisterSystem<LogGuide::UiRectRenderSystem>(0, true, true);
-    // SystemRunner::ActivateSystem の並べ替えは std::sort（非安定）なので、
-    // 矩形の後にテキストを描くには priority を明示的に大きくする必要がある。
-    runner->RegisterSystem<OriGine::TextRenderSystem>(1, true, true);
+    // v7: 矩形とテキストの描画は 1 つの UiRenderSystem にまとめてある
+    // (別々のパスに分けると「全矩形 → 全テキスト」の 2 パスになり、奥のウィンドウの
+    // テキストが手前のウィンドウの矩形の上に出てしまうため)。
+    runner->RegisterSystem<LogGuide::UiRenderSystem>(0, true, true);
     // v3: ヒットテストと色変化。Input / StateTransition カテゴリで、Render カテゴリの
     // 矩形描画系とは実行順が競合しないため priority はどちらも 0 でよい。
     runner->RegisterSystem<LogGuide::UiInteractionSystem>(0, true, true);
     runner->RegisterSystem<LogGuide::UiHighlightSystem>(0, true, true);
+    // v6: ウィンドウの移動/前面化。StateTransition カテゴリだが他システムとは依存関係が
+    // ないため、priority はどちらでもよい（他の登録同様 0 にしておく）。
+    runner->RegisterSystem<LogGuide::UiWindowSystem>(0, true, true);
 
-    // 動作確認用のパネルを 1 枚だけ置く。クリック回数表示のため Run() からも参照するので
-    // メンバ panel_ に持たせる。
-    panel_ = scene_->CreateEntity("UiPanel");
-    scene_->AddComponent<LogGuide::UiTransform>(panel_);
-    scene_->AddComponent<LogGuide::UiRect>(panel_);
-    scene_->AddComponent<LogGuide::UiText>(panel_);
-    scene_->AddComponent<OriGine::TextComponent>(panel_);
-    scene_->AddComponent<LogGuide::UiInteractable>(panel_);
-    scene_->AddComponent<LogGuide::UiHighlight>(panel_);
+    // --- ウィンドウ A: 中にボタンを 1 つ置く ---
+    LogGuide::UiWindowHandles windowA = LogGuide::CreateUiWindow(
+        scene_.get(), runner, "ウィンドウ A", {60.0f, 60.0f}, {320.0f, 200.0f}, 0);
 
-    // 画面中央に 480x140。テスト文字列が折り返さない幅にしてある
-    // (FiraMono 28px の送り幅は約 17px、CJK フォールバックは約 28px)。
-    LogGuide::UiTransform* transform = scene_->GetComponent<LogGuide::UiTransform>(panel_);
-    if (transform) {
-        transform->anchorMin = {0.5f, 0.5f};
-        transform->anchorMax = {0.5f, 0.5f};
-        transform->offsetMin = {-240.0f, -70.0f};
-        transform->offsetMax = {240.0f, 70.0f};
-        // v4: 親をクリップ有効にする（子がはみ出した分が切られるようになる）
-        transform->clipChildren = true;
+    counterButton_ = scene_->CreateEntity("UiCounterButton");
+    scene_->AddComponent<LogGuide::UiTransform>(counterButton_);
+    scene_->AddComponent<LogGuide::UiRect>(counterButton_);
+    scene_->AddComponent<LogGuide::UiText>(counterButton_);
+    scene_->AddComponent<LogGuide::UiInteractable>(counterButton_);
+    scene_->AddComponent<LogGuide::UiHighlight>(counterButton_);
+    scene_->AddComponent<OriGine::TextComponent>(counterButton_);
+
+    // ウィンドウ A の内容領域の上寄りに横いっぱい配置する。
+    if (LogGuide::UiTransform* buttonTransform =
+            scene_->GetComponent<LogGuide::UiTransform>(counterButton_)) {
+        buttonTransform->parent         = windowA.contentArea;
+        buttonTransform->anchorMin      = {0.0f, 0.0f};
+        buttonTransform->anchorMax      = {1.0f, 0.0f};
+        buttonTransform->offsetMin      = {16.0f, 20.0f};
+        buttonTransform->offsetMax      = {-16.0f, 64.0f};
+        buttonTransform->renderPriority = 10;
     }
-
-    // 動作確認用の文字列。v3 ではボタンとして押せることを示すため、初期ラベルをクリック
-    // 誘導文言にする（日本語のままなので、グリフの動的追加とアトラス再アップロードの確認は引き続き兼ねる）。
+    // 動作確認用の文字列。クリックできることを示すため、初期ラベルをクリック誘導文言にする
+    // （日本語のままなので、グリフの動的追加とアトラス再アップロードの確認は引き続き兼ねる）。
     // fillColor は UiHighlightSystem が毎フレーム上書きするので、UiRect 側の初期値は指定しない。
-    // fontHandle は既定の kInvalidFontHandle のままでよい（FontManager が既定フォントに落とす）。
-    TextComponent* text = scene_->GetComponent<OriGine::TextComponent>(panel_);
-    if (text) {
-        text->text     = "クリックしてください";
-        text->fontSize = 28.0f;
-        text->align    = OriGine::TextAlign::Center; // 水平方向
-        text->color    = {0.92f, 0.94f, 0.98f, 1.0f};
-        text->dirty    = true;
+    if (TextComponent* buttonLabel =
+            scene_->GetComponent<OriGine::TextComponent>(counterButton_)) {
+        buttonLabel->text     = "クリックしてください";
+        buttonLabel->fontSize = 18.0f;
+        buttonLabel->align    = OriGine::TextAlign::Center;
+        buttonLabel->color    = {0.92f, 0.94f, 0.98f, 1.0f};
+        buttonLabel->dirty    = true;
     }
-
     runner->RegisterEntity<LogGuide::UiLayoutSystem,
-                            LogGuide::UiRectRenderSystem,
+                            LogGuide::UiRenderSystem,
                             LogGuide::UiInteractionSystem,
-                            LogGuide::UiHighlightSystem,
-                            OriGine::TextRenderSystem>(panel_);
+                            LogGuide::UiHighlightSystem>(counterButton_);
 
-    // v4: 動作確認用の子要素。親パネルの下側に、左右へわざとはみ出す帯を置く。
-    // clipChildren が効いていれば、はみ出した分はパネルの縁でぴったり切られる。
-    // 親に追従するので、ウィンドウをリサイズしてもパネルとの位置関係は保たれる。
-    // UiInteractable は持たせない（ボタンのクリック判定には影響しない）。
-    childBar_ = scene_->CreateEntity("UiChildBar");
-    scene_->AddComponent<LogGuide::UiTransform>(childBar_);
-    scene_->AddComponent<LogGuide::UiRect>(childBar_);
+    // --- ウィンドウ B: 中身がウィンドウで切られることを見せる ---
+    LogGuide::UiWindowHandles windowB = LogGuide::CreateUiWindow(
+        scene_.get(), runner, "ウィンドウ B", {200.0f, 140.0f}, {320.0f, 200.0f}, 1);
 
-    if (LogGuide::UiTransform* bar = scene_->GetComponent<LogGuide::UiTransform>(childBar_)) {
-        bar->parent = panel_;
-        // 親矩形の下寄り。左右に 60px ずつはみ出させる。
-        bar->anchorMin      = {0.0f, 1.0f};
-        bar->anchorMax      = {1.0f, 1.0f};
-        bar->offsetMin      = {-60.0f, -34.0f};
-        bar->offsetMax      = {60.0f, -12.0f};
-        bar->renderPriority = 10; // パネルより手前
+    OriGine::EntityHandle overflowText = scene_->CreateEntity("UiOverflowText");
+    scene_->AddComponent<LogGuide::UiTransform>(overflowText);
+    scene_->AddComponent<LogGuide::UiText>(overflowText);
+    scene_->AddComponent<OriGine::TextComponent>(overflowText);
+
+    if (LogGuide::UiTransform* overflowTransform =
+            scene_->GetComponent<LogGuide::UiTransform>(overflowText)) {
+        overflowTransform->parent    = windowB.contentArea;
+        // 内容領域より横に広くして、ウィンドウの縁で切られることを見せる。
+        overflowTransform->anchorMin = {0.0f, 0.0f};
+        overflowTransform->anchorMax = {1.0f, 1.0f};
+        overflowTransform->offsetMin = {-40.0f, 12.0f};
+        overflowTransform->offsetMax = {40.0f, -12.0f};
     }
-    if (LogGuide::UiRect* barRect = scene_->GetComponent<LogGuide::UiRect>(childBar_)) {
-        barRect->fillColor    = {0.35f, 0.62f, 0.95f, 1.0f};
-        barRect->borderWidth  = 0.0f;
-        barRect->cornerRadius = {4.0f, 4.0f, 4.0f, 4.0f};
+    // テキストのクリップを目で見るための仕込み。ウィンドウの内容領域より横に広い要素に
+    // 載せてあるので、クリップが効いていれば内容領域の左右の縁で文字が切られる。
+    // ウィンドウを動かしても、切られる位置は内容領域に追従してついてくる。
+    if (TextComponent* overflowLabel =
+            scene_->GetComponent<OriGine::TextComponent>(overflowText)) {
+        overflowLabel->text     = "この文章はウィンドウの内容領域より横に広い要素に載せてあります。"
+                                   "ウィンドウの縁で切られていれば、クリッピングが効いています。"
+                                   "ウィンドウを動かしても切られる位置が付いてきます。";
+        overflowLabel->fontSize = 14.0f;
+        overflowLabel->align    = OriGine::TextAlign::Left;
+        overflowLabel->color    = {0.85f, 0.88f, 0.94f, 1.0f};
+        overflowLabel->dirty    = true;
     }
-
     runner->RegisterEntity<LogGuide::UiLayoutSystem,
-                            LogGuide::UiRectRenderSystem>(childBar_);
+                            LogGuide::UiRenderSystem>(overflowText);
 
     // ウィンドウの縁をドラッグしている間、Win32 は DefWindowProc の中で独自のループを回すため
     // Run() のループが止まり、1 フレームも描画されなくなる。
@@ -223,10 +235,10 @@ void TerminalApp::Frame() {
     // UiInteractionSystem が Input カテゴリで立てた wasClicked を拾う。
     // wasClicked は 1 フレームだけ true になる。
     if (LogGuide::UiInteractable* interactable =
-            scene_->GetComponent<LogGuide::UiInteractable>(panel_)) {
+            scene_->GetComponent<LogGuide::UiInteractable>(counterButton_)) {
         if (interactable->wasClicked) {
             ++clickCount_;
-            if (TextComponent* text = scene_->GetComponent<OriGine::TextComponent>(panel_)) {
+            if (TextComponent* text = scene_->GetComponent<OriGine::TextComponent>(counterButton_)) {
                 text->text  = "クリック: " + std::to_string(clickCount_);
                 text->dirty = true; // 文字列を書き換えたら自分で立てる
             }

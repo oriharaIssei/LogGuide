@@ -4,9 +4,9 @@
 #include "component/ComponentRegistry.h"
 #include "system/SystemRegistry.h"
 
-/// engine (v2: テキスト描画は engine の TextComponent / TextRenderSystem をそのまま使う)
+/// engine (v2: テキストのコンポーネントは engine の TextComponent をそのまま使う。
+/// 描画は v5 で自作の UiTextRenderSystem に乗り換えたので、TextRenderSystem は登録しない)
 #include "component/text/TextComponent.h"
-#include "system/text/TextRenderSystem.h"
 
 /// application
 #include "ui/component/UiHighlight.h"
@@ -14,10 +14,12 @@
 #include "ui/component/UiRect.h"
 #include "ui/component/UiText.h"
 #include "ui/component/UiTransform.h"
+#include "ui/component/UiWindow.h"
 #include "ui/system/UiHighlightSystem.h"
 #include "ui/system/UiInteractionSystem.h"
 #include "ui/system/UiLayoutSystem.h"
-#include "ui/system/UiRectRenderSystem.h"
+#include "ui/system/UiRenderSystem.h"
+#include "ui/system/UiWindowSystem.h"
 
 using namespace OriGine;
 
@@ -30,6 +32,8 @@ void RegisterUiComponents() {
     componentRegistry->RegisterComponent<UiText>();
     componentRegistry->RegisterComponent<UiInteractable>();
     componentRegistry->RegisterComponent<UiHighlight>();
+    // v6: ウィンドウの移動/前面化用の状態を持つコンポーネント。
+    componentRegistry->RegisterComponent<UiWindow>();
     // engine のコンポーネント。登録しないと AddComponent がヌル参照で落ちる。
     componentRegistry->RegisterComponent<OriGine::TextComponent>();
 }
@@ -37,11 +41,15 @@ void RegisterUiComponents() {
 void RegisterUiSystems() {
     SystemRegistry* systemRegistry = SystemRegistry::GetInstance();
     systemRegistry->RegisterSystem<UiLayoutSystem>();
-    systemRegistry->RegisterSystem<UiRectRenderSystem>();
     systemRegistry->RegisterSystem<UiInteractionSystem>();
     systemRegistry->RegisterSystem<UiHighlightSystem>();
-    // engine のシステムをアプリ側から登録して使う。
-    systemRegistry->RegisterSystem<OriGine::TextRenderSystem>();
+    // v7: 矩形とテキストの描画は 1 つの UiRenderSystem にまとめてある。
+    // 別システムに分けると SystemRunner::UpdateCategory(Render) が「全部の矩形 → 全部の
+    // テキスト」の 2 パスになり、奥のウィンドウのテキストが手前のウィンドウの矩形の上に
+    // 出てしまうため (二重描画を避けるため engine の TextRenderSystem は登録しない)。
+    systemRegistry->RegisterSystem<UiRenderSystem>();
+    // v6: ウィンドウの移動/前面化。
+    systemRegistry->RegisterSystem<UiWindowSystem>();
 }
 
 } // namespace LogGuide

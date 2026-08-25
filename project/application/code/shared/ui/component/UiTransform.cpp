@@ -25,6 +25,8 @@ void UiTransform::Edit([[maybe_unused]] Scene* _scene, [[maybe_unused]] EntityHa
     ImGui::Checkbox(("ClipChildren" + label).c_str(), &clipChildren);
     // parent は uuid なので編集 UI は作らない。有効/無効だけ読み取り専用で出す。
     ImGui::Text("Parent:%s", parent.IsValid() ? "set" : "none");
+    // resolvedPriority は UiLayoutSystem が毎フレーム書き込むだけなので、読み取り専用表示にする。
+    ImGui::Text("ResolvedPriority:%d", resolvedPriority);
 #endif // _DEBUG
 }
 

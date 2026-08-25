@@ -99,6 +99,11 @@ UiTransform* UiLayoutSystem::ResolveTransform(EntityHandle _entity, int32_t _dep
     transform->clipMin = clipMin;
     transform->clipMax = clipMax;
 
+    // ウィンドウがクリックで前後するため、静的な renderPriority だけでは前後関係を表せない。
+    // 親の解決済み優先度に自分の renderPriority を足した値を、描画/ヒットテストの前後判定に使う。
+    transform->resolvedPriority =
+        (parent != nullptr ? parent->resolvedPriority : 0) + transform->renderPriority;
+
     return transform;
 }
 
@@ -117,10 +122,11 @@ void UiLayoutSystem::LayoutText(EntityHandle _entity) {
 
     // UiTransform の可視状態をテキストにも伝える
     text->visible = transform->visible;
-    // 矩形との前後関係もテキストに揃える。TextComponent::renderPriority はテキスト同士の
-    // 順序を決めるためのもので、矩形との前後関係はシステムの priority (Render カテゴリ内の
-    // UiRectRenderSystem/TextRenderSystem の登録順) で既に決まっている。
-    text->renderPriority = transform->renderPriority;
+    // 前後関係をテキストにも揃える。
+    // UiRenderSystem は矩形とグリフをこの値で一緒に並べ替えてから描くので、
+    // ここに入れた値がそのまま「他の要素との前後関係」になる。
+    // 同じ値なら矩形が先に描かれるため、自分の背景の上に自分の文字が乗る。
+    text->renderPriority = transform->resolvedPriority;
 
     // 内容領域 = 矩形から padding を引いたもの
     const float contentMinX = transform->resolvedMin[X] + uiText->padding[X];

@@ -13,9 +13,11 @@ struct UiRectInstance {
     float4 clipRect;     ///< (minX, minY, maxX, maxY) 親から受け継いだクリップ矩形. 画面ピクセル
 };
 
-/// ルート定数 (b0). Num32BitValues = 2.
+/// ルート定数 (b0). Num32BitValues = 4.
 cbuffer UiRectScene : register(b0) {
-    float2 screenSize; ///< 描画先のピクセルサイズ
+    float2 screenSize;     ///< 描画先のピクセルサイズ
+    uint   instanceOffset; ///< SV_InstanceID は常に 0 始まりなので、開始位置をここで渡す
+    uint   _padding;
 };
 
 struct VSOutput {

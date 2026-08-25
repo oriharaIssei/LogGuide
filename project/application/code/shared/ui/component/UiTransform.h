@@ -53,6 +53,9 @@ public:
     OriGine::Vec2f clipMax = {0.0f, 0.0f};
     /// このフレームで解決済みかを判定するための世代番号. 0 は未解決.
     uint32_t resolvedFrame = 0;
+    /// 階層で加算した描画/ヒットテストの優先度. = 親の resolvedPriority + 自分の renderPriority.
+    /// ウィンドウがクリックで前後するため、静的な renderPriority だけでは足りない.
+    int32_t resolvedPriority = 0;
 };
 
 void to_json(nlohmann::json& _j, const UiTransform& _c);
