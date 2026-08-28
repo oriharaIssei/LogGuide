@@ -8,11 +8,11 @@ using namespace OriGine;
 
 namespace LogGuide {
 
-void UiTransform::Initialize([[maybe_unused]] Scene* _scene, [[maybe_unused]] EntityHandle _owner) {}
+void UiTransform::Initialize([[maybe_unused]] Scene* _scene, [[maybe_unused]] const EntityHandle& _owner) {}
 
 void UiTransform::Finalize() {}
 
-void UiTransform::Edit([[maybe_unused]] Scene* _scene, [[maybe_unused]] EntityHandle _owner, [[maybe_unused]] const std::string& _parentLabel) {
+void UiTransform::Edit([[maybe_unused]] Scene* _scene, [[maybe_unused]] const EntityHandle& _owner, [[maybe_unused]] const std::string& _parentLabel) {
 #ifdef _DEBUG
     std::string label = _parentLabel + "##UiTransform";
 
@@ -23,10 +23,13 @@ void UiTransform::Edit([[maybe_unused]] Scene* _scene, [[maybe_unused]] EntityHa
     ImGui::DragInt(("Priority" + label).c_str(), &renderPriority);
     ImGui::Checkbox(("Visible" + label).c_str(), &visible);
     ImGui::Checkbox(("ClipChildren" + label).c_str(), &clipChildren);
+    ImGui::DragInt(("SurfaceId" + label).c_str(), &surfaceId, 1.0f, 0, 64);
     // parent は uuid なので編集 UI は作らない。有効/無効だけ読み取り専用で出す。
     ImGui::Text("Parent:%s", parent.IsValid() ? "set" : "none");
-    // resolvedPriority は UiLayoutSystem が毎フレーム書き込むだけなので、読み取り専用表示にする。
-    ImGui::Text("ResolvedPriority:%d", resolvedPriority);
+    // resolvedPriority / resolvedSurfaceId / resolvedVisible は UiLayoutSystem が
+    // 毎フレーム書き込むだけなので、読み取り専用表示にする。
+    ImGui::Text("ResolvedPriority:%d ResolvedSurfaceId:%d ResolvedVisible:%d",
+        resolvedPriority, resolvedSurfaceId, static_cast<int>(resolvedVisible));
 #endif // _DEBUG
 }
 
@@ -39,6 +42,7 @@ void to_json(nlohmann::json& _j, const UiTransform& _c) {
     _j["visible"]        = _c.visible;
     _j["parent"]         = _c.parent;
     _j["clipChildren"]   = _c.clipChildren;
+    _j["surfaceId"]      = _c.surfaceId;
 }
 
 void from_json(const nlohmann::json& _j, UiTransform& _c) {
@@ -50,6 +54,7 @@ void from_json(const nlohmann::json& _j, UiTransform& _c) {
     if (_j.contains("visible"))        { _j["visible"].get_to(_c.visible); }
     if (_j.contains("parent"))         { _j["parent"].get_to(_c.parent); }
     if (_j.contains("clipChildren"))   { _j["clipChildren"].get_to(_c.clipChildren); }
+    if (_j.contains("surfaceId"))      { _j["surfaceId"].get_to(_c.surfaceId); }
 }
 
 } // namespace LogGuide

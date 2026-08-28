@@ -27,6 +27,8 @@ class BitmapFont;
 
 namespace LogGuide {
 
+class NativeWindowManager;
+
 /// UiRectRenderSystem と UiTextRenderSystem を統合した描画システム.
 /// v6 まで矩形とテキストが別システム (Render priority 0 / 1) だったため、
 /// SystemRunner::UpdateCategory(Render) が「全部の矩形 → 全部のテキスト」の
@@ -50,8 +52,12 @@ public:
     void CreatePSO() override;
     void StartRender() override;
     void Rendering() override;
-    void DispatchRenderer(OriGine::EntityHandle _entity) override;
+    void DispatchRenderer(const OriGine::EntityHandle& _entity) override;
     bool ShouldSkipRender() const override;
+
+    /// サーフェス (追加の OS ウィンドウ) の問い合わせ先を注入する (v10)。
+    /// 未注入 (nullptr) のときは従来通りメインウィンドウ 1 枚だけに描く。
+    void SetSurfaceProvider(NativeWindowManager* _provider) { surfaceProvider_ = _provider; }
 
 private:
     /// フォント 1 つ分の GPU アトラステクスチャ (UiTextRenderSystem からそのまま移した).
@@ -71,7 +77,8 @@ private:
 
     /// このフレームに描く矩形 1 つ分.
     struct RectItem {
-        int32_t priority = 0;
+        int32_t priority    = 0;
+        int32_t surfaceId   = 0; ///< 描画先サーフェス (v10). UiLayoutSystem が解決した resolvedSurfaceId.
         UiRectInstanceData data{};
     };
     /// このフレームに描くテキスト 1 件分.
@@ -79,6 +86,7 @@ private:
     /// TextComponent とレイアウト結果は非 const で持つ。
     struct TextItem {
         int32_t priority                  = 0;
+        int32_t surfaceId                 = 0; ///< 描画先サーフェス (v10).
         OriGine::BitmapFont* font         = nullptr;
         OriGine::TextComponent* text      = nullptr;
         OriGine::TextLayoutResult* layout = nullptr;
@@ -92,18 +100,20 @@ private:
         Rect = 0, ///< 同じ優先度なら矩形が先（自分の背景の上に自分の文字が乗る）
         Text = 1,
     };
-    /// resolvedPriority で並べ替えるための 1 要素分 (実データは持たず添字だけ持つ).
+    /// サーフェス → resolvedPriority の順で並べ替えるための 1 要素分 (実データは持たず添字だけ持つ).
     struct DrawCommand {
+        int32_t surfaceId  = 0; ///< v10: まずサーフェスでまとめる
         int32_t priority   = 0;
         DrawKind kind      = DrawKind::Rect;
         uint32_t itemIndex = 0; ///< rectItems_ / textItems_ の添字
     };
     /// 並べ替え後、連続する同種のコマンドをまとめた、実際のドローコール 1 回分.
     struct DrawRun {
-        DrawKind kind             = DrawKind::Rect;
-        OriGine::BitmapFont* font = nullptr; ///< Text のときだけ使う
-        uint32_t firstInstance    = 0;
-        uint32_t instanceCount    = 0;
+        int32_t surfaceId          = 0; ///< v10: このランの描画先サーフェス
+        DrawKind kind              = DrawKind::Rect;
+        OriGine::BitmapFont* font  = nullptr; ///< Text のときだけ使う
+        uint32_t firstInstance     = 0;
+        uint32_t instanceCount     = 0;
     };
 
     /// このフレームに集めた矩形 (Rendering() の先頭で毎フレーム積まれ、末尾でクリアする).
@@ -129,6 +139,11 @@ private:
     /// エンティティごとのレイアウト結果。UpdateLayout の早期 return を効かせるために保持する.
     std::unordered_map<OriGine::EntityHandle, OriGine::TextLayoutResult> layoutCache_;
     OriGine::TextLayoutSystem layout_;
+
+    /// サーフェスのサイズ/取得先 (v10). 未注入ならメインウィンドウ 1 枚だけに描く.
+    NativeWindowManager* surfaceProvider_ = nullptr;
+    /// サーフェスごとに実行するランの範囲を切り出すための作業領域 (Rendering() 内で使い回す).
+    std::vector<int32_t> surfacesToProcess_;
 };
 
 } // namespace LogGuide

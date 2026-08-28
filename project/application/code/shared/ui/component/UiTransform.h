@@ -26,9 +26,9 @@ public:
     UiTransform()           = default;
     ~UiTransform() override = default;
 
-    void Initialize(OriGine::Scene* _scene, OriGine::EntityHandle _owner) override;
+    void Initialize(OriGine::Scene* _scene, const OriGine::EntityHandle& _owner) override;
     void Finalize() override;
-    void Edit(OriGine::Scene* _scene, OriGine::EntityHandle _owner, const std::string& _parentLabel) override;
+    void Edit(OriGine::Scene* _scene, const OriGine::EntityHandle& _owner, const std::string& _parentLabel) override;
 
     // --- レイアウト入力 (JSON に保存する) ---
     OriGine::Vec2f anchorMin = {0.5f, 0.5f};
@@ -44,6 +44,10 @@ public:
     /// true なら、子孫をこの矩形で切る（ウィンドウの内容をはみ出させないために使う）.
     /// 自分自身が切られるかどうかは、親から受け継いだクリップ矩形で決まる.
     bool clipChildren = false;
+    /// 描画先サーフェス (v10). 0 = メインウィンドウ、1 以上は NativeWindowManager が管理する
+    /// 追加の OS ウィンドウ. 親がいる場合は親の resolvedSurfaceId を継承する（このフィールドは
+    /// 無視される）ので、実際に指定するのはウィンドウのルートだけでよい.
+    int32_t surfaceId = 0;
 
     // --- レイアウト結果 (UiLayoutSystem が毎フレーム書き込む。JSON に保存しない) ---
     OriGine::Vec2f resolvedMin = {0.0f, 0.0f};
@@ -56,6 +60,12 @@ public:
     /// 階層で加算した描画/ヒットテストの優先度. = 親の resolvedPriority + 自分の renderPriority.
     /// ウィンドウがクリックで前後するため、静的な renderPriority だけでは足りない.
     int32_t resolvedPriority = 0;
+    /// 実際に描画される先のサーフェス ID (v10). 親がいれば親の値をそのまま継承する.
+    int32_t resolvedSurfaceId = 0;
+    /// サーフェスが既に無効 (ウィンドウが閉じられた等) な場合に visible 相当として扱うための
+    /// 実効可視状態 (v10). UiRenderSystem / UiInteractionSystem / UiWindowSystem は
+    /// visible ではなくこちらを見ること.
+    bool resolvedVisible = true;
 };
 
 void to_json(nlohmann::json& _j, const UiTransform& _c);

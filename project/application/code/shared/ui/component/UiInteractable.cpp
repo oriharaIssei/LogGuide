@@ -8,11 +8,11 @@ using namespace OriGine;
 
 namespace LogGuide {
 
-void UiInteractable::Initialize([[maybe_unused]] Scene* _scene, [[maybe_unused]] EntityHandle _owner) {}
+void UiInteractable::Initialize([[maybe_unused]] Scene* _scene, [[maybe_unused]] const EntityHandle& _owner) {}
 
 void UiInteractable::Finalize() {}
 
-void UiInteractable::Edit([[maybe_unused]] Scene* _scene, [[maybe_unused]] EntityHandle _owner, [[maybe_unused]] const std::string& _parentLabel) {
+void UiInteractable::Edit([[maybe_unused]] Scene* _scene, [[maybe_unused]] const EntityHandle& _owner, [[maybe_unused]] const std::string& _parentLabel) {
 #ifdef _DEBUG
     std::string label = _parentLabel + "##UiInteractable";
 

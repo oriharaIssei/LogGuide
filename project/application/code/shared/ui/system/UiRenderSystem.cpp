@@ -13,6 +13,7 @@
 /// application
 #include "ui/component/UiRect.h"
 #include "ui/component/UiTransform.h"
+#include "ui/native/NativeWindowManager.h"
 
 /// stl
 #include <algorithm>
@@ -434,13 +435,13 @@ void UiRenderSystem::StartRender() {
 /// 結果をエンティティ単位でキャッシュする。
 /// </summary>
 /// <param name="_entity">対象のエンティティハンドル</param>
-void UiRenderSystem::DispatchRenderer(EntityHandle _entity) {
+void UiRenderSystem::DispatchRenderer(const EntityHandle& _entity) {
     UiTransform* transform = GetComponent<UiTransform>(_entity);
 
     // --- 矩形 ---
     if (transform != nullptr) {
         UiRect* rect = GetComponent<UiRect>(_entity);
-        if (rect != nullptr && transform->visible && rect->visible) {
+        if (rect != nullptr && transform->resolvedVisible && rect->visible) {
             UiRectInstanceData data{};
             data.rectMin      = transform->resolvedMin;
             data.rectMax      = transform->resolvedMax;
@@ -452,21 +453,24 @@ void UiRenderSystem::DispatchRenderer(EntityHandle _entity) {
             data.clipMin = transform->clipMin;
             data.clipMax = transform->clipMax;
 
-            rectItems_.push_back({transform->resolvedPriority, data});
+            rectItems_.push_back({transform->resolvedPriority, transform->resolvedSurfaceId, data});
         }
     }
 
     // --- テキスト ---
+    // text->visible は UiLayoutSystem::LayoutText が resolvedVisible から書き込み済み。
     TextComponent* text = GetComponent<TextComponent>(_entity);
     if (text != nullptr && text->visible) {
         BitmapFont* font = FontManager::GetInstance()->GetFont(text->fontHandle);
         if (font != nullptr) {
-            // クリップ矩形は UiTransform が持っている。無ければ画面全体を使う。
+            // クリップ矩形とサーフェスは UiTransform が持っている。無ければメインウィンドウ扱いにする。
             Vec2f clipMin{0.0f, 0.0f};
             Vec2f clipMax{0.0f, 0.0f};
+            int32_t surfaceId = 0;
             if (transform != nullptr) {
-                clipMin = transform->clipMin;
-                clipMax = transform->clipMax;
+                clipMin   = transform->clipMin;
+                clipMax   = transform->clipMax;
+                surfaceId = transform->resolvedSurfaceId;
             } else {
                 WinApp* window = Engine::GetInstance()->GetWinApp();
                 clipMax = {static_cast<float>(window->GetWidth()),
@@ -477,7 +481,7 @@ void UiRenderSystem::DispatchRenderer(EntityHandle _entity) {
             TextLayoutResult& cached = layoutCache_[_entity];
             layout_.UpdateLayout(*font, *text, cached, true); // ここで TextComponent::dirty を消費する
             if (!cached.quads.empty()) {
-                textItems_.push_back({text->renderPriority, font, text, &cached, clipMin, clipMax});
+                textItems_.push_back({text->renderPriority, surfaceId, font, text, &cached, clipMin, clipMax});
             }
         }
     }
@@ -531,30 +535,36 @@ void UiRenderSystem::Rendering() {
     }
 
     // --- 矩形とテキストを 1 本の並びにする ---
+    // v10: まずサーフェスでまとめ、その中を resolvedPriority で並べる。
     // 別々のシステムに分けると「全矩形 → 全テキスト」の 2 パスになり、
-    // 奥のウィンドウのテキストが手前のウィンドウの矩形の上に出てしまう。
-    // ここで両方を resolvedPriority で一緒に並べる。
+    // 奥のウィンドウのテキストが手前のウィンドウの矩形の上に出てしまうため、
+    // 同じサーフェス内では両方を resolvedPriority で一緒に並べる。
     commands_.clear();
     commands_.reserve(rectItems_.size() + textItems_.size());
     for (uint32_t i = 0; i < rectItems_.size(); ++i) {
-        commands_.push_back({rectItems_[i].priority, DrawKind::Rect, i});
+        commands_.push_back({rectItems_[i].surfaceId, rectItems_[i].priority, DrawKind::Rect, i});
     }
     for (uint32_t i = 0; i < textItems_.size(); ++i) {
-        commands_.push_back({textItems_[i].priority, DrawKind::Text, i});
+        commands_.push_back({textItems_[i].surfaceId, textItems_[i].priority, DrawKind::Text, i});
     }
 
-    // 優先度の昇順 (小さいものが先＝奥)。同じ優先度なら矩形が先
+    // サーフェス→優先度の昇順 (小さいものが先＝奥)。同じ優先度なら矩形が先
     // (自分の背景の上に自分の文字が乗る。UiLayoutSystem が TextComponent::renderPriority に
     // UiTransform::resolvedPriority と同じ値を入れているため、要素内では必ず同値になる)。
     std::stable_sort(commands_.begin(), commands_.end(),
         [](const DrawCommand& _a, const DrawCommand& _b) {
+            if (_a.surfaceId != _b.surfaceId) {
+                return _a.surfaceId < _b.surfaceId;
+            }
             if (_a.priority != _b.priority) {
                 return _a.priority < _b.priority;
             }
             return _a.kind < _b.kind;
         });
 
-    // --- 並び順にインスタンスを積みつつ、連続する同種をドローランにまとめる ---
+    // --- 並び順にインスタンスを積みつつ、連続する同種・同サーフェスをドローランにまとめる ---
+    // rectBuffer_ / glyphBuffer_ は全サーフェス分をまとめて 1 本に詰め、
+    // サーフェスごとのオフセットは run.firstInstance (ルート定数) で渡す。
     rectBuffer_.openData_.clear();
     glyphBuffer_.openData_.clear();
     runs_.clear();
@@ -564,11 +574,12 @@ void UiRenderSystem::Rendering() {
             const uint32_t first = static_cast<uint32_t>(rectBuffer_.openData_.size());
             rectBuffer_.openData_.push_back(rectItems_[command.itemIndex].data);
 
-            // 直前も矩形なら同じランに足す
-            if (!runs_.empty() && runs_.back().kind == DrawKind::Rect) {
+            // 直前も同じサーフェスの矩形なら同じランに足す
+            if (!runs_.empty() && runs_.back().kind == DrawKind::Rect &&
+                runs_.back().surfaceId == command.surfaceId) {
                 ++runs_.back().instanceCount;
             } else {
-                runs_.push_back({DrawKind::Rect, nullptr, first, 1});
+                runs_.push_back({command.surfaceId, DrawKind::Rect, nullptr, first, 1});
             }
         } else {
             const TextItem& item = textItems_[command.itemIndex];
@@ -586,13 +597,13 @@ void UiRenderSystem::Rendering() {
             }
             const uint32_t count = static_cast<uint32_t>(item.layout->quads.size());
 
-            // 直前もテキストで、しかも同じフォントなら同じランに足す
+            // 直前も同じサーフェスのテキストで、しかも同じフォントなら同じランに足す
             // (フォントが違うとアトラスの差し替えが要るのでランを分ける)
             if (!runs_.empty() && runs_.back().kind == DrawKind::Text &&
-                runs_.back().font == item.font) {
+                runs_.back().surfaceId == command.surfaceId && runs_.back().font == item.font) {
                 runs_.back().instanceCount += count;
             } else {
-                runs_.push_back({DrawKind::Text, item.font, first, count});
+                runs_.push_back({command.surfaceId, DrawKind::Text, item.font, first, count});
             }
         }
     }
@@ -618,13 +629,10 @@ void UiRenderSystem::Rendering() {
         glyphBuffer_.ConvertToBuffer();
     }
 
-    // --- ランの順に描く ---
+    // --- サーフェスごとにレンダーターゲットを切り替えながら、ランの順に描く ---
     StartRender();
 
     auto& commandList = dxCommand_->GetCommandList();
-    WinApp* window            = Engine::GetInstance()->GetWinApp();
-    const float screenWidth   = static_cast<float>(window->GetWidth());
-    const float screenHeight  = static_cast<float>(window->GetHeight());
 
     // SV_InstanceID は常に 0 始まりなので、ランの開始位置はルート定数で渡す。
     // 矩形もランに分かれるようになったため、テキスト側と同じ形にしてある
@@ -644,41 +652,92 @@ void UiRenderSystem::Rendering() {
     };
     static_assert(sizeof(TextRootConstants) == 16, "ルート定数は 4 x 32bit");
 
-    for (const DrawRun& run : runs_) {
-        if (run.instanceCount == 0) {
-            continue;
+    // v10: 処理するサーフェスの一覧。0 (メインウィンドウ) は常に含め、
+    // NativeWindowManager が知っている追加ウィンドウを続ける (id は昇順で払い出されている)。
+    // UI アイテムが 1 つも無いサーフェスも、クリアだけは毎フレーム行う必要があるため、
+    // runs_ の有無に関わらずここで列挙する。
+    surfacesToProcess_.clear();
+    surfacesToProcess_.push_back(0);
+    if (surfaceProvider_ != nullptr) {
+        for (int32_t id : surfaceProvider_->GetSurfaceIds()) {
+            surfacesToProcess_.push_back(id);
         }
-        if (run.kind == DrawKind::Rect) {
-            // ルートシグネチャを切り替えるとルート引数 (ルート定数もディスクリプタテーブルも) は
-            // 無効になるので、ランごとに毎回すべて設定し直す。
-            commandList->SetGraphicsRootSignature(rectPso_->rootSignature.Get());
-            commandList->SetPipelineState(rectPso_->pipelineState.Get());
+    }
 
-            RectRootConstants rc{};
-            rc.screenWidth    = screenWidth;
-            rc.screenHeight   = screenHeight;
-            rc.instanceOffset = run.firstInstance; // SV_InstanceID は常に 0 始まりなのでここで渡す
-            commandList->SetGraphicsRoot32BitConstants(0, 4, &rc, 0);
-            rectBuffer_.SetForRootParameter(commandList, 1);
+    size_t runIndex = 0;
+    for (int32_t surfaceId : surfacesToProcess_) {
+        NativeWindow* nativeWindow = nullptr;
+        float screenWidth          = 0.0f;
+        float screenHeight         = 0.0f;
 
-            commandList->DrawInstanced(6, run.instanceCount, 0, 0);
+        if (surfaceId == 0) {
+            // メインのバックバッファは既に Engine::ScreenPreDraw() がバインド済み。
+            // ここではバインドし直さず、そのまま描く。
+            WinApp* window = Engine::GetInstance()->GetWinApp();
+            screenWidth    = static_cast<float>(window->GetWidth());
+            screenHeight   = static_cast<float>(window->GetHeight());
         } else {
-            auto atlasItr = atlases_.find(run.font);
-            if (atlasItr == atlases_.end() || !atlasItr->second.created) {
+            nativeWindow = surfaceProvider_ != nullptr ? surfaceProvider_->Get(surfaceId) : nullptr;
+            if (nativeWindow == nullptr) {
+                // このフレームで閉じられた等。対応する runs_ があれば読み飛ばして次のサーフェスへ。
+                while (runIndex < runs_.size() && runs_[runIndex].surfaceId == surfaceId) {
+                    ++runIndex;
+                }
                 continue;
             }
-            commandList->SetGraphicsRootSignature(textPso_->rootSignature.Get());
-            commandList->SetPipelineState(textPso_->pipelineState.Get());
+            // RTV/DSV・ビューポート・シザーをこのサーフェスのバックバッファへ切り替えてクリアする。
+            nativeWindow->BindAndClear();
+            const Vec2f clientSize = nativeWindow->GetClientSize();
+            screenWidth            = clientSize[X];
+            screenHeight           = clientSize[Y];
+        }
 
-            TextRootConstants rc{};
-            rc.screenWidth    = screenWidth;
-            rc.screenHeight   = screenHeight;
-            rc.instanceOffset = run.firstInstance; // SV_InstanceID は常に 0 始まりなのでここで渡す
-            commandList->SetGraphicsRoot32BitConstants(0, 4, &rc, 0);
-            glyphBuffer_.SetForRootParameter(commandList, 1);
-            commandList->SetGraphicsRootDescriptorTable(2, atlasItr->second.srv.GetGpuHandle());
+        // runs_ は surfaceId の昇順に並んでいるので、このサーフェス分は連続した範囲になる。
+        while (runIndex < runs_.size() && runs_[runIndex].surfaceId == surfaceId) {
+            const DrawRun& run = runs_[runIndex];
+            ++runIndex;
+            if (run.instanceCount == 0) {
+                continue;
+            }
+            if (run.kind == DrawKind::Rect) {
+                // ルートシグネチャを切り替えるとルート引数 (ルート定数もディスクリプタテーブルも) は
+                // 無効になるので、ランごとに毎回すべて設定し直す。
+                commandList->SetGraphicsRootSignature(rectPso_->rootSignature.Get());
+                commandList->SetPipelineState(rectPso_->pipelineState.Get());
 
-            commandList->DrawInstanced(6, run.instanceCount, 0, 0);
+                RectRootConstants rc{};
+                rc.screenWidth    = screenWidth;
+                rc.screenHeight   = screenHeight;
+                rc.instanceOffset = run.firstInstance; // SV_InstanceID は常に 0 始まりなのでここで渡す
+                commandList->SetGraphicsRoot32BitConstants(0, 4, &rc, 0);
+                rectBuffer_.SetForRootParameter(commandList, 1);
+
+                commandList->DrawInstanced(6, run.instanceCount, 0, 0);
+            } else {
+                auto atlasItr = atlases_.find(run.font);
+                if (atlasItr == atlases_.end() || !atlasItr->second.created) {
+                    continue;
+                }
+                commandList->SetGraphicsRootSignature(textPso_->rootSignature.Get());
+                commandList->SetPipelineState(textPso_->pipelineState.Get());
+
+                TextRootConstants rc{};
+                rc.screenWidth    = screenWidth;
+                rc.screenHeight   = screenHeight;
+                rc.instanceOffset = run.firstInstance; // SV_InstanceID は常に 0 始まりなのでここで渡す
+                commandList->SetGraphicsRoot32BitConstants(0, 4, &rc, 0);
+                glyphBuffer_.SetForRootParameter(commandList, 1);
+                commandList->SetGraphicsRootDescriptorTable(2, atlasItr->second.srv.GetGpuHandle());
+
+                commandList->DrawInstanced(6, run.instanceCount, 0, 0);
+            }
+        }
+
+        if (nativeWindow != nullptr) {
+            // バックバッファを PRESENT に戻す。レンダーターゲットのバインド自体はここでは戻さない
+            // (戻し忘れると Debug 構成の ImGui 描画が飛んでしまうため、
+            // メインへ戻す処理は TerminalApp::Frame() 側に一本化してある。二重に書かないこと)。
+            nativeWindow->EndRender();
         }
     }
 

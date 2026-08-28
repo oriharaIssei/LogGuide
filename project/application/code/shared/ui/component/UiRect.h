@@ -14,9 +14,9 @@ public:
     UiRect()           = default;
     ~UiRect() override = default;
 
-    void Initialize(OriGine::Scene* _scene, OriGine::EntityHandle _owner) override;
+    void Initialize(OriGine::Scene* _scene, const OriGine::EntityHandle& _owner) override;
     void Finalize() override;
-    void Edit(OriGine::Scene* _scene, OriGine::EntityHandle _owner, const std::string& _parentLabel) override;
+    void Edit(OriGine::Scene* _scene, const OriGine::EntityHandle& _owner, const std::string& _parentLabel) override;
 
     OriGine::Vec4f fillColor    = {0.16f, 0.17f, 0.20f, 1.0f};
     OriGine::Vec4f borderColor  = {0.40f, 0.42f, 0.48f, 1.0f};

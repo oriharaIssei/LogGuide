@@ -14,9 +14,9 @@ public:
     UiHighlight()           = default;
     ~UiHighlight() override = default;
 
-    void Initialize(OriGine::Scene* _scene, OriGine::EntityHandle _owner) override;
+    void Initialize(OriGine::Scene* _scene,const OriGine::EntityHandle& _owner) override;
     void Finalize() override;
-    void Edit(OriGine::Scene* _scene, OriGine::EntityHandle _owner, const std::string& _parentLabel) override;
+    void Edit(OriGine::Scene* _scene, const OriGine::EntityHandle& _owner, const std::string& _parentLabel) override;
 
     OriGine::Vec4f normalColor   = {0.16f, 0.17f, 0.20f, 1.0f};
     OriGine::Vec4f hoverColor    = {0.24f, 0.26f, 0.32f, 1.0f};

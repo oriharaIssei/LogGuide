@@ -8,11 +8,11 @@ using namespace OriGine;
 
 namespace LogGuide {
 
-void UiHighlight::Initialize([[maybe_unused]] Scene* _scene, [[maybe_unused]] EntityHandle _owner) {}
+void UiHighlight::Initialize([[maybe_unused]] Scene* _scene, [[maybe_unused]] const EntityHandle& _owner) {}
 
 void UiHighlight::Finalize() {}
 
-void UiHighlight::Edit([[maybe_unused]] Scene* _scene, [[maybe_unused]] EntityHandle _owner, [[maybe_unused]] const std::string& _parentLabel) {
+void UiHighlight::Edit([[maybe_unused]] Scene* _scene, [[maybe_unused]] const EntityHandle& _owner, [[maybe_unused]] const std::string& _parentLabel) {
 #ifdef _DEBUG
     std::string label = _parentLabel + "##UiHighlight";
 

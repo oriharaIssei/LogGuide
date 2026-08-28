@@ -9,6 +9,7 @@
 /// application
 #include "ui/component/UiText.h"
 #include "ui/component/UiTransform.h"
+#include "ui/native/NativeWindowManager.h"
 
 /// stl
 #include <algorithm>
@@ -40,7 +41,7 @@ void UiLayoutSystem::Update() {
     }
 }
 
-UiTransform* UiLayoutSystem::ResolveTransform(EntityHandle _entity, int32_t _depth) {
+UiTransform* UiLayoutSystem::ResolveTransform(const EntityHandle& _entity, int32_t _depth) {
     UiTransform* transform = GetComponent<UiTransform>(_entity);
     if (!transform) {
         return nullptr;
@@ -63,6 +64,21 @@ UiTransform* UiLayoutSystem::ResolveTransform(EntityHandle _entity, int32_t _dep
         parent = ResolveTransform(transform->parent, _depth + 1);
     }
 
+    // v10: 描画先サーフェス。親がいれば親の値を継承する (子が親と違うサーフェスに出ることは無い)。
+    // 親が無ければウィンドウのルートなので、自分の surfaceId をそのまま使う。
+    int32_t surfaceId = 0;
+    if (parent != nullptr) {
+        surfaceId = parent->resolvedSurfaceId;
+    } else {
+        surfaceId = transform->surfaceId;
+    }
+    transform->resolvedSurfaceId = surfaceId;
+
+    // サーフェスが無効 (追加ウィンドウが閉じられた等) なら、UiRenderSystem / UiInteractionSystem /
+    // UiWindowSystem 側で visible 相当として除外できるようにしておく。
+    const bool surfaceValid      = surfaceProvider_ ? surfaceProvider_->IsSurfaceValid(surfaceId) : true;
+    transform->resolvedVisible   = transform->visible && surfaceValid;
+
     if (parent != nullptr) {
         parentMin = parent->resolvedMin;
         parentMax = parent->resolvedMax;
@@ -78,13 +94,20 @@ UiTransform* UiLayoutSystem::ResolveTransform(EntityHandle _entity, int32_t _dep
             clipMax = parent->clipMax;
         }
     } else {
-        // 親が無ければ画面全体が親矩形。クリップも画面全体。
-        WinApp* window = Engine::GetInstance()->GetWinApp();
-        parentMin      = {0.0f, 0.0f};
-        parentMax      = {static_cast<float>(window->GetWidth()),
-                          static_cast<float>(window->GetHeight())};
-        clipMin        = parentMin;
-        clipMax        = parentMax;
+        // 親が無ければ自分のサーフェス全体が親矩形。クリップもサーフェス全体。
+        // NativeWindowManager が未注入なら、従来通り WinApp (メインウィンドウ) のサイズを使う。
+        Vec2f surfaceSize;
+        if (surfaceProvider_ != nullptr) {
+            surfaceSize = surfaceProvider_->GetSurfaceSize(surfaceId);
+        } else {
+            WinApp* window = Engine::GetInstance()->GetWinApp();
+            surfaceSize     = {static_cast<float>(window->GetWidth()),
+                               static_cast<float>(window->GetHeight())};
+        }
+        parentMin = {0.0f, 0.0f};
+        parentMax = surfaceSize;
+        clipMin   = parentMin;
+        clipMax   = parentMax;
     }
 
     const Vec2f parentSize = {parentMax[X] - parentMin[X], parentMax[Y] - parentMin[Y]};
@@ -107,7 +130,7 @@ UiTransform* UiLayoutSystem::ResolveTransform(EntityHandle _entity, int32_t _dep
     return transform;
 }
 
-void UiLayoutSystem::LayoutText(EntityHandle _entity) {
+void UiLayoutSystem::LayoutText(const EntityHandle& _entity) {
     UiTransform* transform = GetComponent<UiTransform>(_entity);
     if (!transform) {
         return;
@@ -120,8 +143,8 @@ void UiLayoutSystem::LayoutText(EntityHandle _entity) {
         return;
     }
 
-    // UiTransform の可視状態をテキストにも伝える
-    text->visible = transform->visible;
+    // UiTransform の実効可視状態 (サーフェス無効化を含む) をテキストにも伝える
+    text->visible = transform->resolvedVisible;
     // 前後関係をテキストにも揃える。
     // UiRenderSystem は矩形とグリフをこの値で一緒に並べ替えてから描くので、
     // ここに入れた値がそのまま「他の要素との前後関係」になる。

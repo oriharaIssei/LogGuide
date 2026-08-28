@@ -25,9 +25,9 @@ public:
     UiText()           = default;
     ~UiText() override = default;
 
-    void Initialize(OriGine::Scene* _scene, OriGine::EntityHandle _owner) override;
+    void Initialize(OriGine::Scene* _scene, const OriGine::EntityHandle& _owner) override;
     void Finalize() override;
-    void Edit(OriGine::Scene* _scene, OriGine::EntityHandle _owner, const std::string& _parentLabel) override;
+    void Edit(OriGine::Scene* _scene, const OriGine::EntityHandle& _owner, const std::string& _parentLabel) override;
 
     /// 矩形の内側の余白 (px). (左, 上, 右, 下)
     OriGine::Vec4f padding            = {8.0f, 4.0f, 8.0f, 4.0f};

@@ -17,6 +17,8 @@
 
 namespace LogGuide {
 
+class NativeWindowManager;
+
 /// UiTransform のアンカー指定から、実際の矩形 (resolvedMin/resolvedMax) を計算する.
 /// v4 で親子関係とクリップ矩形の伝播に対応した。UiTransform::parent が無効なハンドルなら
 /// 親矩形は画面全体になる (v1〜v3 の結果と完全に互換).
@@ -34,12 +36,16 @@ public:
     /// 親を先に解決する必要があるため、UpdateEntity() ではなく Update() をオーバーライドする.
     void Update() override;
 
+    /// サーフェス (追加の OS ウィンドウ) の問い合わせ先を注入する (v10).
+    /// 未注入 (nullptr) のときは従来通り WinApp のサイズを使い、既存の挙動と完全互換になる.
+    void SetSurfaceProvider(NativeWindowManager* _provider) { surfaceProvider_ = _provider; }
+
 private:
     /// 階層をたどって矩形とクリップ矩形を確定させる. 解決済みなら何もしない.
     /// 戻り値は解決後の UiTransform（対象または親に UiTransform が無ければ nullptr）.
-    LogGuide::UiTransform* ResolveTransform(OriGine::EntityHandle _entity, int32_t _depth);
+    LogGuide::UiTransform* ResolveTransform(const OriGine::EntityHandle& _entity, int32_t _depth);
     /// 矩形が確定したあとに TextComponent の位置を決める.
-    void LayoutText(OriGine::EntityHandle _entity);
+    void LayoutText(const OriGine::EntityHandle& _entity);
 
     /// 循環参照や過剰なネストで無限再帰にならないよう深さを制限する.
     static constexpr int32_t kMaxHierarchyDepth = 32;
@@ -52,6 +58,9 @@ private:
     OriGine::TextLayoutSystem layout_;
     /// 計測結果の使い回し先. エンティティをまたいで再利用する.
     OriGine::TextLayoutResult scratchLayout_;
+
+    /// サーフェスのサイズ/有効性の問い合わせ先 (v10). 未注入なら WinApp を使う.
+    NativeWindowManager* surfaceProvider_ = nullptr;
 };
 
 } // namespace LogGuide

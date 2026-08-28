@@ -13,7 +13,7 @@ void UiHighlightSystem::Initialize() {}
 
 void UiHighlightSystem::Finalize() {}
 
-void UiHighlightSystem::UpdateEntity(EntityHandle _entity) {
+void UiHighlightSystem::UpdateEntity(const EntityHandle& _entity) {
     UiHighlight* highlight       = GetComponent<UiHighlight>(_entity);
     UiInteractable* interactable = GetComponent<UiInteractable>(_entity);
     UiRect* rect                 = GetComponent<UiRect>(_entity);

@@ -26,11 +26,63 @@ using namespace OriGine;
 namespace LogGuide {
 
 namespace {
-/// タイトルバーの高さ (px).
-constexpr float kTitleBarHeight = 28.0f;
 /// ウィンドウ 1 枚が占める優先度の幅. UiWindowSystem::kWindowPriorityBand と同じ値にすること
 /// (前面化のたびに UiWindowSystem 側で振り直されるが、生成直後の初期値もここで揃えておく)。
 constexpr int32_t kInitialPriorityBand = 1000;
+
+/// タイトルバーのボタン (閉じる/切り離し) の一辺の長さ (px). タイトルバー高さ - 8px の正方形。
+constexpr float kTitleButtonSize = kUiWindowTitleBarHeight - 8.0f;
+/// ボタンとタイトルバー右端、ボタン同士の間隔 (px).
+constexpr float kTitleButtonMargin = 4.0f;
+/// ボタンをタイトルバー内で縦方向に中央寄せするための上端オフセット (px).
+constexpr float kTitleButtonOffsetY = (kUiWindowTitleBarHeight - kTitleButtonSize) * 0.5f;
+
+/// タイトルバーの子として、右寄せの正方形ボタンを 1 つ作る.
+/// anchorMin == anchorMax == {1, 0} (タイトルバーの右上を点アンカーにする) にしておくことで、
+/// ウィンドウをリサイズしてタイトルバーの幅が変わってもボタンは右端に追従する.
+/// _rightOffset はタイトルバー右端からボタン右端までの距離 (px). 複数のボタンを並べるときに使う.
+EntityHandle CreateTitleBarButton(
+    Scene* _scene,
+    SystemRunner* _runner,
+    const EntityHandle& _titleBar,
+    const std::string& _label,
+    float _rightOffset) {
+    EntityHandle button = _scene->CreateEntity("UiWindowTitleBarButton");
+
+    _scene->AddComponent<UiTransform>(button);
+    _scene->AddComponent<UiRect>(button);
+    _scene->AddComponent<UiText>(button);
+    _scene->AddComponent<TextComponent>(button);
+    _scene->AddComponent<UiInteractable>(button);
+    _scene->AddComponent<UiHighlight>(button);
+
+    if (UiTransform* transform = _scene->GetComponent<UiTransform>(button)) {
+        transform->parent    = _titleBar;
+        transform->anchorMin = {1.0f, 0.0f};
+        transform->anchorMax = {1.0f, 0.0f};
+        transform->offsetMin = {-(_rightOffset + kTitleButtonSize), kTitleButtonOffsetY};
+        transform->offsetMax = {-_rightOffset, kTitleButtonOffsetY + kTitleButtonSize};
+        // タイトルバー (renderPriority 1) より必ず手前に来るよう、タイトルバーからの加算分を積む。
+        transform->renderPriority = 1;
+    }
+    if (UiText* uiText = _scene->GetComponent<UiText>(button)) {
+        uiText->padding       = {0.0f, 0.0f, 0.0f, 0.0f};
+        uiText->verticalAlign = UiTextVerticalAlign::Middle;
+    }
+    if (TextComponent* label = _scene->GetComponent<TextComponent>(button)) {
+        label->text     = _label;
+        label->fontSize = 14.0f;
+        label->align    = TextAlign::Center;
+        label->color    = {0.92f, 0.94f, 0.98f, 1.0f};
+        label->dirty    = true;
+    }
+    // UiRect / UiHighlight は既定色のまま (counterButton_ と同じく、フォーカスを引きすぎない普通のボタン扱い)。
+
+    _runner->RegisterEntity<UiLayoutSystem, UiRenderSystem,
+        UiInteractionSystem, UiHighlightSystem>(button);
+
+    return button;
+}
 } // namespace
 
 UiWindowHandles CreateUiWindow(
@@ -71,12 +123,6 @@ UiWindowHandles CreateUiWindow(
         rootRect->cornerRadius = {6.0f, 6.0f, 6.0f, 6.0f};
         rootRect->borderWidth  = 1.5f;
     }
-    if (UiWindow* window = _scene->GetComponent<UiWindow>(handles.root)) {
-        window->order       = _order;
-        window->titleBar    = handles.titleBar;
-        window->contentArea = handles.contentArea;
-    }
-
     // --- タイトルバー: ルートの子。上端に横いっぱい。ドラッグの判定に UiInteractable を使う ---
     _scene->AddComponent<UiTransform>(handles.titleBar);
     _scene->AddComponent<UiRect>(handles.titleBar);
@@ -90,7 +136,7 @@ UiWindowHandles CreateUiWindow(
         titleTransform->anchorMin      = {0.0f, 0.0f};
         titleTransform->anchorMax      = {1.0f, 0.0f};
         titleTransform->offsetMin      = {0.0f, 0.0f};
-        titleTransform->offsetMax      = {0.0f, kTitleBarHeight};
+        titleTransform->offsetMax      = {0.0f, kUiWindowTitleBarHeight};
         titleTransform->renderPriority = 1;
     }
     if (UiRect* titleRect = _scene->GetComponent<UiRect>(handles.titleBar)) {
@@ -118,6 +164,23 @@ UiWindowHandles CreateUiWindow(
         titleHighlight->disabledColor = {0.20f, 0.20f, 0.22f, 1.0f};
     }
 
+    // --- タイトルバーのボタン: 右端から [閉じる][切り離し] の順に並べる ---
+    // 表示/有効の出し分け (closable / resizable) は毎フレーム UiWindowSystem が行うので、
+    // ここでは closable == false でも常に両方作る。
+    handles.closeButton = CreateTitleBarButton(
+        _scene, _runner, handles.titleBar, "×", kTitleButtonMargin);
+    handles.detachButton = CreateTitleBarButton(
+        _scene, _runner, handles.titleBar, "⧉",
+        kTitleButtonMargin * 2.0f + kTitleButtonSize);
+
+    if (UiWindow* window = _scene->GetComponent<UiWindow>(handles.root)) {
+        window->order        = _order;
+        window->titleBar     = handles.titleBar;
+        window->contentArea  = handles.contentArea;
+        window->closeButton  = handles.closeButton;
+        window->detachButton = handles.detachButton;
+    }
+
     // --- 内容領域: ルートの子。タイトルバーの下の残り全部。枠は付けない (枠はルートが描く) ---
     _scene->AddComponent<UiTransform>(handles.contentArea);
 
@@ -125,7 +188,7 @@ UiWindowHandles CreateUiWindow(
         contentTransform->parent         = handles.root;
         contentTransform->anchorMin      = {0.0f, 0.0f};
         contentTransform->anchorMax      = {1.0f, 1.0f};
-        contentTransform->offsetMin      = {0.0f, kTitleBarHeight};
+        contentTransform->offsetMin      = {0.0f, kUiWindowTitleBarHeight};
         contentTransform->offsetMax      = {0.0f, 0.0f};
         contentTransform->clipChildren   = true;
         contentTransform->renderPriority = 1;
