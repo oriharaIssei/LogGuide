@@ -22,6 +22,8 @@ public:
     OriGine::Vec4f hoverColor    = {0.24f, 0.26f, 0.32f, 1.0f};
     OriGine::Vec4f pressedColor  = {0.12f, 0.13f, 0.16f, 1.0f};
     OriGine::Vec4f disabledColor = {0.14f, 0.14f, 0.15f, 1.0f};
+    /// 選択中 (UiInteractable::isSelected) のときの色 (v12).
+    OriGine::Vec4f selectedColor = {0.20f, 0.34f, 0.52f, 1.0f};
 };
 
 void to_json(nlohmann::json& _j, const UiHighlight& _c);

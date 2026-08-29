@@ -83,6 +83,13 @@ public:
     /// v9 の確認用: サブウィンドウごとに違う色にして、個別に描けていることを目で確認するために使う.
     void SetClearColor(const OriGine::Vec4f& _color) { clearColor_ = _color; }
 
+    /// このフレーム分たまっているホイールの回転量 (ノッチ単位。1 ノッチ = WHEEL_DELTA) を返す (v12).
+    /// WM_MOUSEWHEEL のたびに加算され、ResetWheelDelta() を呼ぶまで保持される。
+    int32_t GetWheelDelta() const { return wheelDelta_; }
+    /// フレーム境界で呼び、ホイールの蓄積量を 0 に戻す (v12).
+    /// NativeWindowManager::UpdateMouseState() から毎フレーム 1 回呼ばれる想定.
+    void ResetWheelDelta() { wheelDelta_ = 0; }
+
 private:
     /// ウィンドウクラスを (プロセス内で) 1 回だけ登録する.
     static void EnsureWindowClassRegistered();
@@ -117,6 +124,9 @@ private:
     int32_t minClientHeight_ = 0;
 
     bool closeRequested_ = false;
+
+    /// WM_MOUSEWHEEL でためる、ノッチ単位の回転量 (v12). フレーム境界で ResetWheelDelta() が 0 に戻す.
+    int32_t wheelDelta_ = 0;
 
     /// WM_SIZE で記録するだけにして、実際のリサイズは BeginFrame() で行う
     /// (描画の途中でスワップチェーンをリサイズすると危険なため).

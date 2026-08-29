@@ -12,6 +12,7 @@
 #include "ui/component/UiHighlight.h"
 #include "ui/component/UiInteractable.h"
 #include "ui/component/UiRect.h"
+#include "ui/component/UiScrollView.h"
 #include "ui/component/UiText.h"
 #include "ui/component/UiTransform.h"
 #include "ui/component/UiWindow.h"
@@ -19,6 +20,7 @@
 #include "ui/system/UiInteractionSystem.h"
 #include "ui/system/UiLayoutSystem.h"
 #include "ui/system/UiRenderSystem.h"
+#include "ui/system/UiScrollSystem.h"
 #include "ui/system/UiWindowSystem.h"
 
 using namespace OriGine;
@@ -34,6 +36,8 @@ void RegisterUiComponents() {
     componentRegistry->RegisterComponent<UiHighlight>();
     // v6: ウィンドウの移動/前面化用の状態を持つコンポーネント。
     componentRegistry->RegisterComponent<UiWindow>();
+    // v12: 縦スクロールビュー。
+    componentRegistry->RegisterComponent<UiScrollView>();
     // engine のコンポーネント。登録しないと AddComponent がヌル参照で落ちる。
     componentRegistry->RegisterComponent<OriGine::TextComponent>();
 }
@@ -50,6 +54,8 @@ void RegisterUiSystems() {
     systemRegistry->RegisterSystem<UiRenderSystem>();
     // v6: ウィンドウの移動/前面化。
     systemRegistry->RegisterSystem<UiWindowSystem>();
+    // v12: 縦スクロールビューのホイール/つまみドラッグ。
+    systemRegistry->RegisterSystem<UiScrollSystem>();
 }
 
 } // namespace LogGuide

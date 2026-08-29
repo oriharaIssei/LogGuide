@@ -5,6 +5,7 @@
 /// stl
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 /// math
@@ -81,6 +82,12 @@ public:
     bool IsMouseTrigger() const { return mouseDown_ && !mouseDownPrev_; }
     bool IsMouseRelease() const { return !mouseDown_ && mouseDownPrev_; }
 
+    /// 指定サーフェスのこのフレーム分のホイール回転量 (ノッチ単位。1 ノッチ = WHEEL_DELTA) を返す (v12)。
+    /// _surfaceId == 0 なら InputManager 経由のメインウィンドウの値 (engine の DirectInput 由来。
+    /// メインウィンドウが前面のときは正しく動く) をノッチ単位に揃えて返す。
+    /// UpdateMouseState() を呼んだあとのフレームでのみ有効な値になる。
+    int32_t GetSurfaceWheelDelta(int32_t _surfaceId) const;
+
     /// このアプリが所有するウィンドウ (メイン or 追加ウィンドウ) のいずれかが前面か.
     bool IsAppForeground() const;
 
@@ -100,6 +107,10 @@ private:
 
     bool mouseDown_     = false;
     bool mouseDownPrev_ = false;
+
+    /// UpdateMouseState() が各ウィンドウの GetWheelDelta() を控えて 0 に戻す先 (v12).
+    /// サーフェス ID → このフレームのホイール回転量 (ノッチ単位)。
+    std::unordered_map<int32_t, int32_t> surfaceWheelDelta_;
 };
 
 } // namespace LogGuide

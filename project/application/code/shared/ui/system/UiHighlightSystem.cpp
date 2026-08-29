@@ -21,12 +21,16 @@ void UiHighlightSystem::UpdateEntity(const EntityHandle& _entity) {
         return;
     }
 
+    // v12: 優先順位は disabled > pressed > hover > selected > normal。
+    // 「選択中の行にホバーしたらホバー色」という、選択より上に一時的な状態を優先する自然な挙動になる。
     if (!interactable->enabled) {
         rect->fillColor = highlight->disabledColor;
     } else if (interactable->isPressed && interactable->isHovered) {
         rect->fillColor = highlight->pressedColor;
     } else if (interactable->isHovered) {
         rect->fillColor = highlight->hoverColor;
+    } else if (interactable->isSelected) {
+        rect->fillColor = highlight->selectedColor;
     } else {
         rect->fillColor = highlight->normalColor;
     }

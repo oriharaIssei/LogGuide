@@ -28,6 +28,9 @@ public:
     bool isPressed = false;
     /// このフレームでクリックが成立した（押した要素の上で離された）。1 フレームだけ true
     bool wasClicked = false;
+    /// 選択中かどうか (v12). 誰が立てるかはアプリの自由（例: 一覧の行をクリックしたら排他で立てる）。
+    /// 実行時の状態なので JSON には保存しない。
+    bool isSelected = false;
 };
 
 void to_json(nlohmann::json& _j, const UiInteractable& _c);

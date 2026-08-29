@@ -2,6 +2,8 @@
 
 /// engine
 #include "Engine.h"
+#include "input/InputManager.h" // v12: メインウィンドウのホイール回転量を取るために要る
+#include "input/MouseInput.h"
 #include "winApp/WinApp.h"
 
 using namespace OriGine;
@@ -156,6 +158,15 @@ OriGine::Vec2f NativeWindowManager::GetSurfaceScreenOrigin(int32_t _surfaceId) c
 void NativeWindowManager::UpdateMouseState() {
     mouseDownPrev_ = mouseDown_;
 
+    // v12: 各追加ウィンドウが WM_MOUSEWHEEL でためたホイール回転量を控えてから 0 に戻す。
+    // ここで一旦控えておかないと、GetSurfaceWheelDelta() を呼ぶタイミング (UiScrollSystem は
+    // StateTransition カテゴリ) によっては scene_->Update() の途中で消えてしまう。
+    surfaceWheelDelta_.clear();
+    for (auto& entry : windows_) {
+        surfaceWheelDelta_[entry.id] = entry.window->GetWheelDelta();
+        entry.window->ResetWheelDelta();
+    }
+
     // 他のアプリを操作している間は UI が反応しないようにする。
     // GetAsyncKeyState はシステム全体の物理状態なので、この判定が無いと
     // 他アプリでのクリックまで拾ってしまう。
@@ -167,6 +178,17 @@ void NativeWindowManager::UpdateMouseState() {
     // 左右ボタンの入れ替え設定 (コントロールパネル) を考慮する。
     const int vkPrimary = GetSystemMetrics(SM_SWAPBUTTON) ? VK_RBUTTON : VK_LBUTTON;
     mouseDown_ = (GetAsyncKeyState(vkPrimary) & 0x8000) != 0;
+}
+
+int32_t NativeWindowManager::GetSurfaceWheelDelta(int32_t _surfaceId) const {
+    if (_surfaceId == 0) {
+        // メインウィンドウは従来通り engine (DirectInput) 経由。生値は WHEEL_DELTA (120) 単位なので、
+        // 追加ウィンドウ側 (NativeWindow::wheelDelta_、WM_MOUSEWHEEL の時点で既にノッチ単位に正規化
+        // 済み) と単位を揃えるためにここで割る。
+        return OriGine::InputManager::GetInstance()->GetMouse()->GetWheelDelta() / WHEEL_DELTA;
+    }
+    auto it = surfaceWheelDelta_.find(_surfaceId);
+    return it != surfaceWheelDelta_.end() ? it->second : 0;
 }
 
 bool NativeWindowManager::IsAppForeground() const {

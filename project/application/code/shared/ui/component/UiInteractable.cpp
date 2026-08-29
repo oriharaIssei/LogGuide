@@ -18,7 +18,7 @@ void UiInteractable::Edit([[maybe_unused]] Scene* _scene, [[maybe_unused]] const
 
     ImGui::Checkbox(("Enabled" + label).c_str(), &enabled);
     // 実行時の状態は UiInteractionSystem が書き込むだけなので、ここでは読み取り専用表示にする。
-    ImGui::Text("hover:%d press:%d click:%d", static_cast<int>(isHovered), static_cast<int>(isPressed), static_cast<int>(wasClicked));
+    ImGui::Text("hover:%d press:%d click:%d sel:%d", static_cast<int>(isHovered), static_cast<int>(isPressed), static_cast<int>(wasClicked), static_cast<int>(isSelected));
 #endif // _DEBUG
 }
 

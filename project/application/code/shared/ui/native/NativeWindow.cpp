@@ -76,6 +76,14 @@ LRESULT CALLBACK NativeWindow::WndProc(HWND _hwnd, UINT _msg, WPARAM _wparam, LP
             // GDI に消させない。リサイズ中のちらつきが減る。
             return 1;
 
+        case WM_MOUSEWHEEL:
+            // v12: 1 フレーム分ためておき、フレーム境界 (NativeWindowManager::UpdateMouseState())
+            // で 0 に戻す。同じフレーム内で複数回飛んでくることもあるため加算する。
+            if (self != nullptr) {
+                self->wheelDelta_ += GET_WHEEL_DELTA_WPARAM(_wparam) / WHEEL_DELTA;
+            }
+            return 0;
+
         case WM_GETMINMAXINFO:
             if (self != nullptr) {
                 MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(_lparam);

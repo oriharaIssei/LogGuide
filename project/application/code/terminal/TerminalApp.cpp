@@ -1,7 +1,7 @@
 #include "TerminalApp.h"
 
 #include <algorithm> // std::max / std::clamp (v10: 再結合時のクランプ処理)
-#include <string> // std::to_string (クリック回数の文字列化)
+#include <string>
 
 #define ENGINE_INCLUDE
 #define RESOURCE_DIRECTORY
@@ -31,11 +31,9 @@
 /// 切り離し/再結合できるようにした）
 #include "ui/native/NativeWindowManager.h"
 
-/// UI（ImGui に依存しない自作 UI。ECS 上のコンポーネント/システムとして実装している）
-#include "ui/component/UiHighlight.h"
-#include "ui/component/UiInteractable.h"
-#include "ui/component/UiRect.h"
-#include "ui/component/UiText.h"
+/// UI（ImGui に依存しない自作 UI。ECS 上のコンポーネント/システムとして実装している。
+/// 個々のコンポーネント (UiRect/UiText/UiInteractable/UiHighlight 等) は TerminalLauncherUi.cpp が
+/// 直接触るので、ここではウィンドウの切り離し/再結合に要る UiTransform/UiWindow だけ include する）
 #include "ui/component/UiTransform.h"
 #include "ui/component/UiWindow.h"
 #include "ui/system/UiHighlightSystem.h"
@@ -45,10 +43,14 @@
 /// UI（v6: ウィンドウの移動/前面化。UiWindowBuilder がウィンドウ 1 枚分の 3 エンティティを組み立てる）
 #include "ui/UiWindowBuilder.h"
 #include "ui/system/UiWindowSystem.h"
+/// UI（v12: 縦スクロールビューのホイール/つまみドラッグ）
+#include "ui/system/UiScrollSystem.h"
 
 /// UI（v2: テキストのコンポーネントは engine の TextComponent をそのまま使う。
 /// v5: 描画はクリップ矩形付きで描ける自作の UiTextRenderSystem に乗り換えた。
-/// v7: UiTextRenderSystem は UiRectRenderSystem と統合されて UiRenderSystem になった）
+/// v7: UiTextRenderSystem は UiRectRenderSystem と統合されて UiRenderSystem になった。
+/// v13: TerminalApp.cpp 自体はもう TextComponent を直接触らないが、DetachWindow() が
+/// ウィンドウタイトルの文字列を読むために定義が要る）
 #include "component/text/TextComponent.h"
 
 #ifdef _DEBUG
@@ -127,6 +129,8 @@ void TerminalApp::Initialize(const std::vector<std::string>& _commandLines) {
     // v6: ウィンドウの移動/前面化。StateTransition カテゴリだが他システムとは依存関係が
     // ないため、priority はどちらでもよい（他の登録同様 0 にしておく）。
     runner->RegisterSystem<LogGuide::UiWindowSystem>(0, true, true);
+    // v12: 縦スクロールビューのホイール/つまみドラッグ。StateTransition カテゴリ。
+    runner->RegisterSystem<LogGuide::UiScrollSystem>(0, true, true);
 
     // v10: サーフェス (追加の OS ウィンドウ) 対応のために各システムへ NativeWindowManager を注入する。
     // 未注入のときは各システムとも従来通りメインウィンドウ 1 枚だけの挙動になる。
@@ -134,80 +138,12 @@ void TerminalApp::Initialize(const std::vector<std::string>& _commandLines) {
     runner->GetSystem<LogGuide::UiRenderSystem>()->SetSurfaceProvider(nativeWindows_.get());
     runner->GetSystem<LogGuide::UiInteractionSystem>()->SetSurfaceProvider(nativeWindows_.get());
     runner->GetSystem<LogGuide::UiWindowSystem>()->SetSurfaceProvider(nativeWindows_.get());
+    runner->GetSystem<LogGuide::UiScrollSystem>()->SetSurfaceProvider(nativeWindows_.get());
 
-    // --- ウィンドウ A: 中にボタンを 1 つ置く ---
-    LogGuide::UiWindowHandles windowA = LogGuide::CreateUiWindow(
-        scene_.get(), runner, "ウィンドウ A", {60.0f, 60.0f}, {320.0f, 200.0f}, 0);
-    uiWindowRoots_.push_back(windowA.root); // v10: 切り離し/再結合の対象として覚えておく
-
-    counterButton_ = scene_->CreateEntity("UiCounterButton");
-    scene_->AddComponent<LogGuide::UiTransform>(counterButton_);
-    scene_->AddComponent<LogGuide::UiRect>(counterButton_);
-    scene_->AddComponent<LogGuide::UiText>(counterButton_);
-    scene_->AddComponent<LogGuide::UiInteractable>(counterButton_);
-    scene_->AddComponent<LogGuide::UiHighlight>(counterButton_);
-    scene_->AddComponent<OriGine::TextComponent>(counterButton_);
-
-    // ウィンドウ A の内容領域の上寄りに横いっぱい配置する。
-    if (LogGuide::UiTransform* buttonTransform =
-            scene_->GetComponent<LogGuide::UiTransform>(counterButton_)) {
-        buttonTransform->parent         = windowA.contentArea;
-        buttonTransform->anchorMin      = {0.0f, 0.0f};
-        buttonTransform->anchorMax      = {1.0f, 0.0f};
-        buttonTransform->offsetMin      = {16.0f, 20.0f};
-        buttonTransform->offsetMax      = {-16.0f, 64.0f};
-        buttonTransform->renderPriority = 10;
-    }
-    // 動作確認用の文字列。クリックできることを示すため、初期ラベルをクリック誘導文言にする
-    // （日本語のままなので、グリフの動的追加とアトラス再アップロードの確認は引き続き兼ねる）。
-    // fillColor は UiHighlightSystem が毎フレーム上書きするので、UiRect 側の初期値は指定しない。
-    if (TextComponent* buttonLabel =
-            scene_->GetComponent<OriGine::TextComponent>(counterButton_)) {
-        buttonLabel->text     = "クリックしてください";
-        buttonLabel->fontSize = 18.0f;
-        buttonLabel->align    = OriGine::TextAlign::Center;
-        buttonLabel->color    = {0.92f, 0.94f, 0.98f, 1.0f};
-        buttonLabel->dirty    = true;
-    }
-    runner->RegisterEntity<LogGuide::UiLayoutSystem,
-                            LogGuide::UiRenderSystem,
-                            LogGuide::UiInteractionSystem,
-                            LogGuide::UiHighlightSystem>(counterButton_);
-
-    // --- ウィンドウ B: 中身がウィンドウで切られることを見せる ---
-    windowB_ = LogGuide::CreateUiWindow(
-        scene_.get(), runner, "ウィンドウ B", {200.0f, 140.0f}, {320.0f, 200.0f}, 1);
-    uiWindowRoots_.push_back(windowB_.root); // v10: 切り離し/再結合の対象として覚えておく
-
-    overflowTextEntity_ = scene_->CreateEntity("UiOverflowText");
-    scene_->AddComponent<LogGuide::UiTransform>(overflowTextEntity_);
-    scene_->AddComponent<LogGuide::UiText>(overflowTextEntity_);
-    scene_->AddComponent<OriGine::TextComponent>(overflowTextEntity_);
-
-    if (LogGuide::UiTransform* overflowTransform =
-            scene_->GetComponent<LogGuide::UiTransform>(overflowTextEntity_)) {
-        overflowTransform->parent    = windowB_.contentArea;
-        // 内容領域より横に広くして、ウィンドウの縁で切られることを見せる。
-        overflowTransform->anchorMin = {0.0f, 0.0f};
-        overflowTransform->anchorMax = {1.0f, 1.0f};
-        overflowTransform->offsetMin = {-40.0f, 12.0f};
-        overflowTransform->offsetMax = {40.0f, -12.0f};
-    }
-    // テキストのクリップを目で見るための仕込み。ウィンドウの内容領域より横に広い要素に
-    // 載せてあるので、クリップが効いていれば内容領域の左右の縁で文字が切られる。
-    // ウィンドウを動かしても、切られる位置は内容領域に追従してついてくる。
-    if (TextComponent* overflowLabel =
-            scene_->GetComponent<OriGine::TextComponent>(overflowTextEntity_)) {
-        overflowLabel->text     = "この文章はウィンドウの内容領域より横に広い要素に載せてあります。"
-                                   "ウィンドウの縁で切られていれば、クリッピングが効いています。"
-                                   "ウィンドウを動かしても切られる位置が付いてきます。";
-        overflowLabel->fontSize = 14.0f;
-        overflowLabel->align    = OriGine::TextAlign::Left;
-        overflowLabel->color    = {0.85f, 0.88f, 0.94f, 1.0f};
-        overflowLabel->dirty    = true;
-    }
-    runner->RegisterEntity<LogGuide::UiLayoutSystem,
-                            LogGuide::UiRenderSystem>(overflowTextEntity_);
+    // --- v13: ランチャーの実 UI (レコーダー起動 / セッション一覧 / 再生) を自作 UI で組み立てる ---
+    // ImGui 版 (TerminalPanel) と同じ内容を、ImGui に依存せず全構成で表示する。
+    launcherUi_.Build(scene_.get(), runner, catalog_.get());
+    uiWindowRoots_.push_back(launcherUi_.GetWindowRoot()); // v10: 切り離し/再結合の対象として覚えておく
 
     // ウィンドウの縁をドラッグしている間、Win32 は DefWindowProc の中で独自のループを回すため
     // Run() のループが止まり、1 フレームも描画されなくなる。
@@ -280,37 +216,22 @@ void TerminalApp::Frame() {
 
     scene_->Update(); // Input → StateTransition (ここで新たな detachRequested が立ちうる) → Movement → ...
 
-    // UiInteractionSystem が Input カテゴリで立てた wasClicked を拾う。
-    // wasClicked は 1 フレームだけ true になる。
-    if (LogGuide::UiInteractable* interactable =
-            scene_->GetComponent<LogGuide::UiInteractable>(counterButton_)) {
-        if (interactable->wasClicked) {
-            ++clickCount_;
-            if (TextComponent* text = scene_->GetComponent<OriGine::TextComponent>(counterButton_)) {
-                text->text  = "クリック: " + std::to_string(clickCount_);
-                text->dirty = true; // 文字列を書き換えたら自分で立てる
-            }
-        }
+    // v13: 自作 UI によるランチャーの実 UI。アプリを起動したら true が返るので、ターミナルを終了する。
+    if (launcherUi_.Update(&lastError_)) {
+        isEndRequest_ = true;
     }
 
-    // v8: ウィンドウ B の閉じるボタン。UiWindowSystem は中身まで辿れないので、
-    // closeRequested を見たアプリ側が「ルート・タイトルバー・内容領域・両ボタン・中身」を
-    // まとめて破棄する。一度破棄したらもう見に行かないよう windowBClosed_ で防ぐ。
-    if (!windowBClosed_) {
-        if (LogGuide::UiWindow* windowB = scene_->GetComponent<LogGuide::UiWindow>(windowB_.root)) {
-            if (windowB->closeRequested) {
-                scene_->AddDeleteEntity(windowB_.root);
-                scene_->AddDeleteEntity(windowB_.titleBar);
-                scene_->AddDeleteEntity(windowB_.contentArea);
-                scene_->AddDeleteEntity(windowB_.closeButton);
-                scene_->AddDeleteEntity(windowB_.detachButton);
-                scene_->AddDeleteEntity(overflowTextEntity_); // アプリが contentArea の子として足した中身
-                windowBClosed_ = true;
-            }
+    // ランチャーウィンドウの閉じるボタン。他に何も無くなるので、閉じたらアプリごと終了する
+    // (エンティティを個別に破棄する必要は無い。Finalize() でシーンごと片付く)。
+    if (LogGuide::UiWindow* launcherWindow =
+            scene_->GetComponent<LogGuide::UiWindow>(launcherUi_.GetWindowRoot())) {
+        if (launcherWindow->closeRequested) {
+            isEndRequest_ = true;
         }
     }
 
 #ifdef _DEBUG
+    // ImGui 版 (Debug 専用)。自作 UI が実機で確認されるまでの比較対象・保険として残してある。
     if (LogGuide::DrawTerminalPanel(*catalog_, &lastError_)) {
         isEndRequest_ = true; // アプリを起動したのでターミナルは終了する
     }

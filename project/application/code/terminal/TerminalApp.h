@@ -8,13 +8,16 @@
 #include <unordered_map>
 #include <vector>
 
-// counterButton_ / windowB_ (EntityHandle) をメンバとして値で持つために定義が要る。Scene は
-// ポインタで持つだけなので前方宣言のままでよい。
+// uiWindowRoots_ / detachedWindowsBySurface_ (EntityHandle) をメンバとして値で持つために定義が要る。
+// Scene はポインタで持つだけなので前方宣言のままでよい。
 #include "entity/EntityHandle.h"
-#include "ui/UiWindowBuilder.h"
 
 // nativeWindows_ (unique_ptr) をメンバとして値で持つために定義が要る。
 #include "ui/native/NativeWindowManager.h"
+
+// v13: launcherUi_ (値メンバ) の定義が要る。ランチャーの実 UI 一式 (ウィンドウ組み立て/更新) は
+// ここにまとめてある (TerminalApp.cpp が肥大化しないようにするため)。
+#include "TerminalLauncherUi.h"
 
 // v10: 切り離し/再結合の座標計算に使う。
 #include <Vector2.h>
@@ -33,12 +36,13 @@ class SessionCatalog;
 //
 // LogGuideTerminal.exe のアプリケーション本体。録画系（RecordingSystem）も
 // 再生系（DualPlayerController）も持たない、純粋なランチャー。
-// ImGui の UI からレコーダー/プレイヤーの exe を起動したら自身は終了する
+// launcherUi_（自作 UI）からレコーダー/プレイヤーの exe を起動したら自身は終了する
 // （常駐しない）。EditorController（シーンエディタ）はランチャーに不要なため
 // 初期化しない。
 // Debug/Develop/Release いずれの構成でもコンパイル・リンクでき、ImGui に依存しない
-// 自作 UI（ECS 上のコンポーネント/システムとして実装）をすべての構成で描画する。
-// ImGui によるランチャー UI（TerminalPanel）は Debug 構成のみ表示される。
+// 自作 UI（ECS 上のコンポーネント/システムとして実装。実体は TerminalLauncherUi）を
+// すべての構成で描画する。ImGui によるランチャー UI（TerminalPanel）は比較対象・保険として
+// Debug 構成のみ引き続き表示される。
 // =============================================================================
 class TerminalApp : public FrameWork {
 public:
@@ -76,21 +80,17 @@ private:
     std::unique_ptr<OriGine::SceneManager>    sceneManager_ = nullptr;
     std::unique_ptr<LogGuide::SessionCatalog> catalog_      = nullptr;
     std::unique_ptr<OriGine::Scene>           scene_        = nullptr; // ECS 上の自作 UI (ウィンドウ) を描画するためのシーン
-    OriGine::EntityHandle                     counterButton_{}; // v6: クリック回数を出すボタン（ウィンドウ A の中身）。Run() から参照する
-    int32_t                                   clickCount_   = 0;
     std::string                               lastError_;
 
-    // v8: ウィンドウ B は「閉じるボタン」の確認用に丸ごと保持しておく。
-    // closeRequested が立ったら、ルート・タイトルバー・内容領域・両ボタン・中身をまとめて破棄する。
-    LogGuide::UiWindowHandles                 windowB_{};
-    OriGine::EntityHandle                     overflowTextEntity_{}; // ウィンドウ B の中身。閉じるときに一緒に破棄する
-    bool                                       windowBClosed_ = false;
+    // v13: 自作 UI によるランチャーの実 UI (レコーダー起動 / セッション一覧 / 再生)。
+    // ImGui 版 (TerminalPanel, Debug 専用) と同じことを全構成で行う。
+    LogGuide::TerminalLauncherUi               launcherUi_;
 
     // v9: 追加の OS ウィンドウ基盤。v10 からは UI ウィンドウの切り離し/再結合が実際に使う
     // (v9 時点の F2/F3 確認用ショートカットは、切り離しが動くようになったので削除した)。
     std::unique_ptr<LogGuide::NativeWindowManager> nativeWindows_ = nullptr;
 
-    // v10: 切り離し/再結合の対象になる UI ウィンドウのルート一覧 (ウィンドウ A・B)。
+    // v10: 切り離し/再結合の対象になる UI ウィンドウのルート一覧 (v13 からはランチャーウィンドウ 1 枚)。
     std::vector<OriGine::EntityHandle> uiWindowRoots_;
     // v10: 切り離し中のウィンドウ。サーフェス ID → そのウィンドウのルート。
     std::unordered_map<int32_t, OriGine::EntityHandle> detachedWindowsBySurface_;
