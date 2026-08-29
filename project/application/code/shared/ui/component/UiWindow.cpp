@@ -34,6 +34,8 @@ void UiWindow::Edit([[maybe_unused]] Scene* _scene, [[maybe_unused]] const Entit
     ImGui::Text("Resizing:%d Edges:0x%X", static_cast<int>(isResizing), resizeEdges);
     ImGui::Text("CloseRequested:%d DetachRequested:%d",
         static_cast<int>(closeRequested), static_cast<int>(detachRequested));
+    // v14: dockNode も実行時の状態 (UiDockBuilder が書き込む) なので読み取り専用表示にする。
+    ImGui::Text("DockNode:%s", dockNode.IsValid() ? "set" : "none");
 #endif // _DEBUG
 }
 

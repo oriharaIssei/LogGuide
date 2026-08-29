@@ -204,4 +204,36 @@ UiWindowHandles CreateUiWindow(
     return handles;
 }
 
+void HideUiWindowChrome(Scene* _scene, const UiWindow& _window) {
+    // v10 の DetachWindow() と v14 の DockUiWindow() で共通して使う (タイトルバーの役割を
+    // 他の仕組み (OS の枠 / タブ) が肩代わりするので、自作タイトルバーとその子ボタンを隠し、
+    // 内容領域をウィンドウ上端まで広げる)。
+    if (UiTransform* titleTransform = _scene->GetComponent<UiTransform>(_window.titleBar)) {
+        titleTransform->visible = false;
+    }
+    if (UiTransform* closeTransform = _scene->GetComponent<UiTransform>(_window.closeButton)) {
+        closeTransform->visible = false;
+    }
+    if (UiTransform* detachTransform = _scene->GetComponent<UiTransform>(_window.detachButton)) {
+        detachTransform->visible = false;
+    }
+    if (UiTransform* contentTransform = _scene->GetComponent<UiTransform>(_window.contentArea)) {
+        contentTransform->offsetMin = {0.0f, 0.0f};
+    }
+}
+
+void ShowUiWindowChrome(Scene* _scene, const UiWindow& _window) {
+    if (UiTransform* titleTransform = _scene->GetComponent<UiTransform>(_window.titleBar)) {
+        titleTransform->visible = true;
+    }
+    if (UiTransform* detachTransform = _scene->GetComponent<UiTransform>(_window.detachButton)) {
+        detachTransform->visible = true;
+    }
+    // closeButton の visible は closable に応じて UiWindowSystem が毎フレーム設定し直す
+    // (タイトルバーが見えているときだけ) ので、ここでは明示的に戻さない。
+    if (UiTransform* contentTransform = _scene->GetComponent<UiTransform>(_window.contentArea)) {
+        contentTransform->offsetMin = {0.0f, kUiWindowTitleBarHeight};
+    }
+}
+
 } // namespace LogGuide

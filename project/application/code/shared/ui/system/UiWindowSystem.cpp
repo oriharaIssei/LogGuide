@@ -337,6 +337,14 @@ EntityHandle UiWindowSystem::FindFrontMostWindowAt(int32_t _surfaceId, const Vec
         if (transform->resolvedSurfaceId != _surfaceId) {
             continue;
         }
+        // v14: ドックされているウィンドウは前面化 (BringToFront) にもリサイズ枠判定にも
+        // 使わない (このメソッドは両方で共有されているため、ここで弾けば両方から自然に外れる)。
+        // movable/resizable は false になるので移動/リサイズ自体は既に弾かれているが、
+        // ここを弾かないとクリックのたびに「同じサーフェス上の他のフローティングウィンドウ」の
+        // 前後関係まで振り直されてしまう。
+        if (window->IsDocked()) {
+            continue;
+        }
         const bool inside =
             _cursor[X] >= transform->resolvedMin[X] && _cursor[X] < transform->resolvedMax[X] &&
             _cursor[Y] >= transform->resolvedMin[Y] && _cursor[Y] < transform->resolvedMax[Y];

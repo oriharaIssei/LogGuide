@@ -64,6 +64,23 @@ UiTransform* UiLayoutSystem::ResolveTransform(const EntityHandle& _entity, int32
         parent = ResolveTransform(transform->parent, _depth + 1);
     }
 
+    // 「親を設定していない (ルート)」と「親を設定しているのに解決できない (親が既に破棄された
+    // 孤児)」を区別する。後者をこのまま素通りさせると、下の else 節で「親矩形 = サーフェス全体」
+    // として再配置されてしまい、巨大な部品として描画・ヒットテストされてしまう
+    // (原因B。v14 で発覚したドックタブの孤児化バグ)。孤児は非表示・矩形ゼロにして、
+    // 描画/ヒットテスト (どちらも resolvedVisible を見る) から確実に外す。
+    // ルート (ウィンドウのルートやドックスペースのルートなど parent 未設定の要素) は
+    // これまで通り画面全体を親矩形として扱われ続ける。
+    if (transform->parent.IsValid() && parent == nullptr) {
+        transform->resolvedVisible  = false;
+        transform->resolvedMin      = {0.0f, 0.0f};
+        transform->resolvedMax      = {0.0f, 0.0f};
+        transform->clipMin          = {0.0f, 0.0f};
+        transform->clipMax          = {0.0f, 0.0f};
+        transform->resolvedPriority = 0;
+        return transform;
+    }
+
     // v10: 描画先サーフェス。親がいれば親の値を継承する (子が親と違うサーフェスに出ることは無い)。
     // 親が無ければウィンドウのルートなので、自分の surfaceId をそのまま使う。
     int32_t surfaceId = 0;
@@ -77,7 +94,17 @@ UiTransform* UiLayoutSystem::ResolveTransform(const EntityHandle& _entity, int32
     // サーフェスが無効 (追加ウィンドウが閉じられた等) なら、UiRenderSystem / UiInteractionSystem /
     // UiWindowSystem 側で visible 相当として除外できるようにしておく。
     const bool surfaceValid      = surfaceProvider_ ? surfaceProvider_->IsSurfaceValid(surfaceId) : true;
-    transform->resolvedVisible   = transform->visible && surfaceValid;
+    // 親が隠れているなら子孫もまとめて隠す。
+    // UiTransform::visible は「自分を描くか」の指定でしかなく、子へは伝播しない。
+    // そのため、器 (ウィンドウのルートやタイトルバー) だけを隠しても中身が描かれ続け、
+    // ヒットテストにも引っかかり続ける。v14 で「非アクティブなタブのウィンドウの
+    // ルートを隠しても中のラベルが消えず、タブを切り替えても見た目が変わらない」
+    // という形で表面化した。visible を落とすたびに子を 1 つずつ手で隠して回るのは
+    // 破綻するので、階層で解決するこの場所で伝播させる。
+    // 親は再帰で先に解決済み (resolvedFrame でメモ化されている) なので、
+    // ここで parent->resolvedVisible を見てよい。
+    transform->resolvedVisible = transform->visible && surfaceValid
+                              && (parent == nullptr || parent->resolvedVisible);
 
     if (parent != nullptr) {
         parentMin = parent->resolvedMin;

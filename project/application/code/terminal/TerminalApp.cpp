@@ -45,6 +45,8 @@
 #include "ui/system/UiWindowSystem.h"
 /// UI（v12: 縦スクロールビューのホイール/つまみドラッグ）
 #include "ui/system/UiScrollSystem.h"
+/// UI（v14: ドックツリーとタブ）
+#include "ui/system/UiDockSystem.h"
 
 /// UI（v2: テキストのコンポーネントは engine の TextComponent をそのまま使う。
 /// v5: 描画はクリップ矩形付きで描ける自作の UiTextRenderSystem に乗り換えた。
@@ -131,6 +133,10 @@ void TerminalApp::Initialize(const std::vector<std::string>& _commandLines) {
     runner->RegisterSystem<LogGuide::UiWindowSystem>(0, true, true);
     // v12: 縦スクロールビューのホイール/つまみドラッグ。StateTransition カテゴリ。
     runner->RegisterSystem<LogGuide::UiScrollSystem>(0, true, true);
+    // v14: ドックツリーとタブ。StateTransition カテゴリだが、スプリッターのカーソル形状が
+    // UiWindowSystem (リサイズ縁) の結果を上書きしてしまわないよう、priority を大きくして
+    // 必ず後に実行されるようにする (UiDockSystem.h のコメント参照)。
+    runner->RegisterSystem<LogGuide::UiDockSystem>(1, true, true);
 
     // v10: サーフェス (追加の OS ウィンドウ) 対応のために各システムへ NativeWindowManager を注入する。
     // 未注入のときは各システムとも従来通りメインウィンドウ 1 枚だけの挙動になる。
@@ -139,11 +145,18 @@ void TerminalApp::Initialize(const std::vector<std::string>& _commandLines) {
     runner->GetSystem<LogGuide::UiInteractionSystem>()->SetSurfaceProvider(nativeWindows_.get());
     runner->GetSystem<LogGuide::UiWindowSystem>()->SetSurfaceProvider(nativeWindows_.get());
     runner->GetSystem<LogGuide::UiScrollSystem>()->SetSurfaceProvider(nativeWindows_.get());
+    runner->GetSystem<LogGuide::UiDockSystem>()->SetSurfaceProvider(nativeWindows_.get());
 
     // --- v13: ランチャーの実 UI (レコーダー起動 / セッション一覧 / 再生) を自作 UI で組み立てる ---
     // ImGui 版 (TerminalPanel) と同じ内容を、ImGui に依存せず全構成で表示する。
     launcherUi_.Build(scene_.get(), runner, catalog_.get());
     uiWindowRoots_.push_back(launcherUi_.GetWindowRoot()); // v10: 切り離し/再結合の対象として覚えておく
+
+    // --- v14: ドックツリー/タブの確認用デモ (ドックスペース + ダミーウィンドウ 4 枚) ---
+    dockDemo_.Build(scene_.get(), runner);
+    for (const EntityHandle& root : dockDemo_.GetWindowRoots()) {
+        uiWindowRoots_.push_back(root); // v10: 切り離し/再結合の対象として覚えておく (デモ用も同様に扱う)
+    }
 
     // ウィンドウの縁をドラッグしている間、Win32 は DefWindowProc の中で独自のループを回すため
     // Run() のループが止まり、1 フレームも描画されなくなる。
@@ -220,6 +233,9 @@ void TerminalApp::Frame() {
     if (launcherUi_.Update(&lastError_)) {
         isEndRequest_ = true;
     }
+
+    // v14: ドックツリー/タブの確認用デモ (F4 キーでのアンドック確認)。
+    dockDemo_.Update();
 
     // ランチャーウィンドウの閉じるボタン。他に何も無くなるので、閉じたらアプリごと終了する
     // (エンティティを個別に破棄する必要は無い。Finalize() でシーンごと片付く)。
@@ -356,14 +372,9 @@ void TerminalApp::DetachWindow(const EntityHandle& _root) {
     // オフセットを外す。閉じる/切り離しボタンはタイトルバーの子で、UiLayoutSystem は親の
     // visible を子へ自動では伝播しない (矩形の計算は親が見えなくても続く) ため、
     // 個別に隠さないとタイトルバーの無い場所にボタンだけ浮いてしまう。
-    titleTransform->visible     = false;
-    contentTransform->offsetMin = {0.0f, 0.0f};
-    if (LogGuide::UiTransform* closeButtonTransform = scene_->GetComponent<LogGuide::UiTransform>(window->closeButton)) {
-        closeButtonTransform->visible = false;
-    }
-    if (LogGuide::UiTransform* detachButtonTransform = scene_->GetComponent<LogGuide::UiTransform>(window->detachButton)) {
-        detachButtonTransform->visible = false;
-    }
+    // v14: この後始末は UiDockBuilder::DockUiWindow が行うものと共通なので、
+    // 共通処理として UiWindowBuilder::HideUiWindowChrome() にまとめてある。
+    LogGuide::HideUiWindowChrome(scene_.get(), *window);
 
     // OS の枠に任せる。
     window->movable   = false;
@@ -440,17 +451,10 @@ void TerminalApp::HandleClosedSurfaces() {
 
         // 自作タイトルバーと閉じる/切り離しボタンを再表示し、内容領域のオフセットを元に戻す。
         // closeButton の visible は closable の値に応じて UiWindowSystem が毎フレーム
-        // 設定し直す (タイトルバーが見えていれば) ので、ここではタイトルバーと
-        // detachButton (対応する設定項目が無いので常に表示) だけ明示的に戻す。
-        if (LogGuide::UiTransform* titleTransform = scene_->GetComponent<LogGuide::UiTransform>(window->titleBar)) {
-            titleTransform->visible = true;
-        }
-        if (LogGuide::UiTransform* detachButtonTransform = scene_->GetComponent<LogGuide::UiTransform>(window->detachButton)) {
-            detachButtonTransform->visible = true;
-        }
-        if (LogGuide::UiTransform* contentTransform = scene_->GetComponent<LogGuide::UiTransform>(window->contentArea)) {
-            contentTransform->offsetMin = {0.0f, LogGuide::kUiWindowTitleBarHeight};
-        }
+        // 設定し直す (タイトルバーが見えていれば) ので、ここでは明示的に戻さない。
+        // v14: この後始末は UiDockBuilder::UndockUiWindow が行うものと共通なので、
+        // 共通処理として UiWindowBuilder::ShowUiWindowChrome() にまとめてある。
+        LogGuide::ShowUiWindowChrome(scene_.get(), *window);
 
         window->movable   = true;
         window->resizable = true;

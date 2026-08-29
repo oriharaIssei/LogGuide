@@ -18,6 +18,8 @@
 // v13: launcherUi_ (値メンバ) の定義が要る。ランチャーの実 UI 一式 (ウィンドウ組み立て/更新) は
 // ここにまとめてある (TerminalApp.cpp が肥大化しないようにするため)。
 #include "TerminalLauncherUi.h"
+// v14: dockDemo_ (値メンバ) の定義が要る。ドックツリー/タブの確認用デモ一式。
+#include "UiDockDemo.h"
 
 // v10: 切り離し/再結合の座標計算に使う。
 #include <Vector2.h>
@@ -85,6 +87,11 @@ private:
     // v13: 自作 UI によるランチャーの実 UI (レコーダー起動 / セッション一覧 / 再生)。
     // ImGui 版 (TerminalPanel, Debug 専用) と同じことを全構成で行う。
     LogGuide::TerminalLauncherUi               launcherUi_;
+
+    // v14: ドックツリー/タブの確認用デモ (ドックスペース + ダミーウィンドウ 4 枚)。
+    // ランチャー本体とは無関係の動作確認用で、v15 でドラッグ&ドロップのドッキングを
+    // 実装する際にここへ差し替えていく想定。
+    LogGuide::UiDockDemo                       dockDemo_;
 
     // v9: 追加の OS ウィンドウ基盤。v10 からは UI ウィンドウの切り離し/再結合が実際に使う
     // (v9 時点の F2/F3 確認用ショートカットは、切り離しが動くようになったので削除した)。

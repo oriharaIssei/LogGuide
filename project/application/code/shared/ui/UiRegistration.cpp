@@ -9,6 +9,7 @@
 #include "component/text/TextComponent.h"
 
 /// application
+#include "ui/component/UiDockNode.h"
 #include "ui/component/UiHighlight.h"
 #include "ui/component/UiInteractable.h"
 #include "ui/component/UiRect.h"
@@ -16,6 +17,7 @@
 #include "ui/component/UiText.h"
 #include "ui/component/UiTransform.h"
 #include "ui/component/UiWindow.h"
+#include "ui/system/UiDockSystem.h"
 #include "ui/system/UiHighlightSystem.h"
 #include "ui/system/UiInteractionSystem.h"
 #include "ui/system/UiLayoutSystem.h"
@@ -38,6 +40,8 @@ void RegisterUiComponents() {
     componentRegistry->RegisterComponent<UiWindow>();
     // v12: 縦スクロールビュー。
     componentRegistry->RegisterComponent<UiScrollView>();
+    // v14: ドックツリーとタブ。
+    componentRegistry->RegisterComponent<UiDockNode>();
     // engine のコンポーネント。登録しないと AddComponent がヌル参照で落ちる。
     componentRegistry->RegisterComponent<OriGine::TextComponent>();
 }
@@ -56,6 +60,10 @@ void RegisterUiSystems() {
     systemRegistry->RegisterSystem<UiWindowSystem>();
     // v12: 縦スクロールビューのホイール/つまみドラッグ。
     systemRegistry->RegisterSystem<UiScrollSystem>();
+    // v14: ドックツリーとタブ。SystemRunner::RegisterSystem() で実際にシーンへ登録する際、
+    // UiWindowSystem よりカーソル形状の決定が後になるよう priority を大きくすること
+    // (UiDockSystem.h のコメント参照。ここは型を SystemRegistry に登録するだけで priority は無関係)。
+    systemRegistry->RegisterSystem<UiDockSystem>();
 }
 
 } // namespace LogGuide

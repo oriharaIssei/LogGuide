@@ -84,6 +84,13 @@ public:
     bool closeRequested = false;
     /// 切り離しボタンが押された. v9 でアプリが拾う（今のところ拾い先が無いので立ちっぱなしになる）.
     bool detachRequested = false;
+
+    /// v14: 今このウィンドウが入っている葉ノード (UiDockNode)。無効ならフローティング.
+    /// ドック/アンドックのたびに UiDockBuilder (DockUiWindow/UndockUiWindow) が書き換える。
+    /// 実行時の状態なので JSON には保存しない.
+    OriGine::EntityHandle dockNode{};
+    /// ドックされているかどうか.
+    bool IsDocked() const { return dockNode.IsValid(); }
 };
 
 void to_json(nlohmann::json& _j, const UiWindow& _c);
