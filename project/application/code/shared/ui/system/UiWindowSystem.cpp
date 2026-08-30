@@ -43,6 +43,9 @@ void UiWindowSystem::Update() {
     // 注入されていれば UI 自前のマウス状態 (NativeWindowManager::UpdateMouseState) を使う。
     const bool triggered = surfaceProvider_ ? surfaceProvider_->IsMouseTrigger() : mouse->IsTrigger(MouseButton::LEFT);
     const bool released  = surfaceProvider_ ? surfaceProvider_->IsMouseRelease() : mouse->IsRelease(MouseButton::LEFT);
+    // v15: タブの引き剥がし (UiDockSystem) からドラッグを引き継いだかどうかの判定に使う
+    // (「ボタンがまだ押されっぱなしか」であって、トリガー/リリースの瞬間ではないので別途取る)。
+    const bool mouseDown = surfaceProvider_ ? surfaceProvider_->IsMouseDown() : mouse->IsPress(MouseButton::LEFT);
 
     // v10: カーソル座標はエンティティが乗っているサーフェスに応じて取る。
     // NativeWindowManager が未注入なら、従来通りメインウィンドウのカーソル座標だけを使う
@@ -181,7 +184,12 @@ void UiWindowSystem::Update() {
         }
 
         UiInteractable* titleInteractable = GetComponent<UiInteractable>(window->titleBar);
-        if (!titleInteractable || !titleInteractable->isPressed) {
+        const bool titleBarPressed        = titleInteractable && titleInteractable->isPressed;
+        // v15: タブを引き剥がしてこのドラッグへ引き継いだ場合、実際に押されているのは
+        // タブボタン (別エンティティ) であってタイトルバーではないため、titleBarPressed は
+        // false のままになる。UiDockSystem が isDragging を true にして引き継いだ場合は、
+        // ボタンが押されっぱなしである間 (mouseDown) はそのまま継続させる。
+        if (!titleBarPressed && !(window->isDragging && mouseDown)) {
             window->isDragging = false;
             continue;
         }
@@ -273,15 +281,25 @@ void UiWindowSystem::BringToFront(const EntityHandle& _window) {
     // 前後関係は OS が決めるので、自作の order / renderPriority は同じサーフェス内だけで振り直す。
     const int32_t surfaceId = targetTransform->resolvedSurfaceId;
 
-    // 既に最前面なら何もしない（毎クリックで振り直すのを避ける）
-    bool alreadyFront = true;
-    for (const auto& entity : entities_) {
-        UiWindow* window       = GetComponent<UiWindow>(entity);
-        UiTransform* transform = GetComponent<UiTransform>(entity);
-        if (window && window != target && transform && transform->resolvedSurfaceId == surfaceId &&
-            window->order > target->order) {
-            alreadyFront = false;
-            break;
+    // 既に最前面なら何もしない（毎クリックで振り直すのを避ける）。
+    // ただし、renderPriority が order から期待される値 (order * kWindowPriorityBand) とずれて
+    // いる場合は、「順序としては最前面のはずなのに描画優先度が揃っていない」状態なので、
+    // 素通りせず必ず振り直す。UiDockSystem はドック中 windowTransform->renderPriority を毎フレーム
+    // 0 にリセットする一方 window->order には触らないため (UiDockSystem::UpdateLeafNode 参照)、
+    // ドックする前から order が同一サーフェス内で最大だったウィンドウをアンドック直後に
+    // BringToFront() しても「order は既に最大 = 既に最前面」と誤判定されて renderPriority が
+    // 0 のまま残ってしまう不具合があった (v16 で発覚。アンドック後にウィンドウや他の要素の
+    // 前後関係が崩れて見える原因になっていた)。
+    bool alreadyFront = (targetTransform->renderPriority == target->order * kWindowPriorityBand);
+    if (alreadyFront) {
+        for (const auto& entity : entities_) {
+            UiWindow* window       = GetComponent<UiWindow>(entity);
+            UiTransform* transform = GetComponent<UiTransform>(entity);
+            if (window && window != target && transform && transform->resolvedSurfaceId == surfaceId &&
+                window->order > target->order) {
+                alreadyFront = false;
+                break;
+            }
         }
     }
     if (alreadyFront) {

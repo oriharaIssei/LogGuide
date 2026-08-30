@@ -22,6 +22,22 @@ constexpr float kUiDockTabWidth = 140.0f;
 constexpr float kUiDockTabBarHeight = 28.0f;
 /// スプリッターの幅 (px). UiDockSystem からも参照するため公開する.
 constexpr float kUiDockSplitterWidth = 6.0f;
+/// ドロップ先オーバーレイの描画優先度 (v15). 全ウィンドウ (最大でも
+/// kWindowPriorityBand * ウィンドウ枚数程度) より必ず手前に出るよう十分大きくしておく.
+constexpr int32_t kUiDockOverlayPriority = 5000;
+
+/// ドックスペース (ルート) の描画優先度.
+/// ドックは「背景に敷かれた領域」であって、フローティングウィンドウより必ず奥に居る。
+/// ところがフローティングウィンドウのルートは UiWindowSystem::BringToFront() が
+/// order * kWindowPriorityBand を割り当てるため、起動直後など order が 0 のウィンドウが
+/// あると、ドックスペース (既定の 0) と優先度が並んでしまう。
+/// 並ぶと UiRenderSystem は「同じ優先度なら矩形が先、テキストが後」で並べ替えるので、
+/// ドック側のテキストがフローティングウィンドウの矩形の上に描かれ、
+/// 背景が透けて見える (v16 で発覚。ランチャーを一度クリックして order が上がると直る、
+/// という分かりにくい症状になっていた)。スプリッター (+4) やタブ (+1) に至っては
+/// 同点どころか上回るため、ウィンドウを貫いて描かれていた。
+/// ドックツリー全体をまとめて十分低い帯へ落とし、順序を order に依存させない。
+constexpr int32_t kUiDockSpacePriority = -1000000;
 
 /// サーフェスを丸ごと覆うドックスペース (ルートの葉ノード) を作る.
 /// _surfaceId は 0 ならメインウィンドウ、1 以上は NativeWindowManager が管理する追加ウィンドウ
@@ -48,5 +64,12 @@ void DockUiWindow(OriGine::Scene* _scene, const OriGine::EntityHandle& _window,
 /// 既にフローティングなら何もしない.
 void UndockUiWindow(OriGine::Scene* _scene, const OriGine::EntityHandle& _window,
                     const OriGine::Vec2f& _position, const OriGine::Vec2f& _size);
+
+/// ドロップ先を示す半透明の矩形として使い回す 1 枚のエンティティを作る (v15).
+/// UiDockSystem がドラッグ中だけ毎フレーム位置/サイズ/visible を書き換える。
+/// UiInteractable は付けない (ヒットテストを奪ってしまうため)。サーフェス直下 (親なし) に
+/// 置くことで、フローティングウィンドウより必ず手前に描かれるようにする
+/// (renderPriority は kUiDockOverlayPriority)。
+OriGine::EntityHandle CreateUiDockDropOverlay(OriGine::Scene* _scene, OriGine::SystemRunner* _runner);
 
 } // namespace LogGuide

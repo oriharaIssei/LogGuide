@@ -36,6 +36,8 @@ void UiWindow::Edit([[maybe_unused]] Scene* _scene, [[maybe_unused]] const Entit
         static_cast<int>(closeRequested), static_cast<int>(detachRequested));
     // v14: dockNode も実行時の状態 (UiDockBuilder が書き込む) なので読み取り専用表示にする。
     ImGui::Text("DockNode:%s", dockNode.IsValid() ? "set" : "none");
+    // v15: floatingSize も UiDockBuilder が書き込む実行時の状態。
+    ImGui::Text("FloatingSize:(%.1f, %.1f)", floatingSize[X], floatingSize[Y]);
 #endif // _DEBUG
 }
 

@@ -91,6 +91,11 @@ public:
     OriGine::EntityHandle dockNode{};
     /// ドックされているかどうか.
     bool IsDocked() const { return dockNode.IsValid(); }
+
+    /// v15: ドックされる直前のフローティング時の矩形サイズ (アンドックで戻すときに使う)。
+    /// UiDockBuilder::DockUiWindow がフローティングからドックへ移る瞬間に書き込む。
+    /// 実行時の状態なので JSON には保存しない.
+    OriGine::Vec2f floatingSize = {320.0f, 260.0f};
 };
 
 void to_json(nlohmann::json& _j, const UiWindow& _c);

@@ -17,6 +17,12 @@
 #include "ui/component/UiWindow.h"
 #include "ui/native/NativeWindowManager.h"
 
+// v15: UpdateDropTarget() がドラッグ中のウィンドウを探すのに、UiWindow コンポーネント配列を
+// 直接 (登録されているエンティティ集合とは関係なく) 総当たりする必要があるため、
+// ComponentArray<T>::GetSlotsRef() を直接使う。ISystem.h 経由で間接的には入っているが、
+// 直接使うヘッダなので明示的に include する。
+#include "component/ComponentArray.h"
+
 /// stl
 #include <algorithm>
 
@@ -54,9 +60,12 @@ void UiDockSystem::Update() {
         if (node->split != UiDockSplit::None) {
             UpdateSplitNode(*node, *transform, released);
         } else {
-            UpdateLeafNode(*node);
+            UpdateLeafNode(entity, *node);
         }
     }
+
+    // v15: ドラッグ中のウィンドウのドロップ先判定/オーバーレイ表示/ドロップ実行。
+    UpdateDropTarget(released);
 }
 
 void UiDockSystem::UpdateSplitNode(UiDockNode& _node, UiTransform& _transform, bool _released) {
@@ -141,7 +150,7 @@ void UiDockSystem::UpdateSplitNode(UiDockNode& _node, UiTransform& _transform, b
     }
 }
 
-void UiDockSystem::UpdateLeafNode(UiDockNode& _node) {
+void UiDockSystem::UpdateLeafNode(const EntityHandle& _leaf, UiDockNode& _node) {
     // 1. タブの作り直し。
     if (_node.tabsDirty) {
         RebuildTabButtons(_node);
@@ -167,6 +176,11 @@ void UiDockSystem::UpdateLeafNode(UiDockNode& _node) {
             interactable->isSelected = (static_cast<int32_t>(i) == _node.activeTab);
         }
     }
+
+    // v15: タブを押したまま一定距離動かしたら引き剥がし要求を積む。
+    // (wasClicked は release されたフレームにしか立たないため、ここより前で判定しても
+    // クリックとしての activeTab 切り替えとは競合しない)。
+    HandleTabTearOff(_leaf, _node);
 
     // 3. windows の各ウィンドウのルートを内容領域に合わせ、activeTab のものだけ表示する。
     Scene* scene = GetScene();
@@ -202,6 +216,271 @@ void UiDockSystem::UpdateLeafNode(UiDockNode& _node) {
             HideUiWindowChrome(scene, *window);
         }
     }
+}
+
+void UiDockSystem::HandleTabTearOff(const EntityHandle& _leaf, UiDockNode& _node) {
+    // 現在押されているタブを 1 つ探す (複数同時押しは無い想定)。
+    int32_t pressedIndex = -1;
+    for (size_t i = 0; i < _node.tabButtons.size(); ++i) {
+        if (UiInteractable* interactable = GetComponent<UiInteractable>(_node.tabButtons[i])) {
+            if (interactable->isPressed) {
+                pressedIndex = static_cast<int32_t>(i);
+                break;
+            }
+        }
+    }
+
+    if (pressedIndex < 0) {
+        // 何も押されていない: このリーフに対する追跡があれば消す (次の押下でまた最初から測る)。
+        if (tabTear_.leaf == _leaf) {
+            tabTear_ = TabTearState{};
+        }
+        return;
+    }
+
+    // ドックスペースはサーフェス 0 (メインウィンドウ) にしか無い前提 (v15 の「やらないこと」参照)。
+    const Vec2f cursor = SurfaceCursor(0);
+
+    if (tabTear_.leaf != _leaf || tabTear_.tabIndex != pressedIndex) {
+        // 新しく押され始めた (あるいは別のタブ/葉へ移った): 押下位置から測り直す。
+        tabTear_.leaf        = _leaf;
+        tabTear_.tabIndex    = pressedIndex;
+        tabTear_.pressCursor = cursor;
+        tabTear_.torn        = false;
+        return;
+    }
+
+    if (tabTear_.torn) {
+        return; // 既に引き剥がし要求を積んだ (アプリの処理待ち)。同じ押下中は積み直さない。
+    }
+
+    const float dx = cursor[X] - tabTear_.pressCursor[X];
+    const float dy = cursor[Y] - tabTear_.pressCursor[Y];
+    if (dx * dx + dy * dy < kTearOffDistance * kTearOffDistance) {
+        return; // まだ閾値未満。
+    }
+
+    if (pressedIndex >= static_cast<int32_t>(_node.windows.size())) {
+        return; // 想定外 (タブボタン数と windows 数がずれている)。
+    }
+    const EntityHandle windowHandle = _node.windows[pressedIndex];
+    UiWindow* window                = GetComponent<UiWindow>(windowHandle);
+    if (!window) {
+        return;
+    }
+
+    // アンドック後の大きさは、ドックされる前のフローティング時の矩形 (floatingSize) を使う。
+    // タイトルバーの中心あたりを掴んだことにして、そのままドラッグへ引き継ぐ。
+    const Vec2f size       = window->floatingSize;
+    const Vec2f grabOffset = {size[X] * 0.5f, kUiWindowTitleBarHeight * 0.5f};
+    const Vec2f position   = {cursor[X] - grabOffset[X], cursor[Y] - grabOffset[Y]};
+
+    tearOffRequests_.push_back(UiDockTearOffRequest{windowHandle, position, grabOffset});
+    tabTear_.torn = true;
+}
+
+void UiDockSystem::UpdateDropTarget(bool _released) {
+    UiTransform* overlayTransform = dropOverlay_.IsValid() ? GetComponent<UiTransform>(dropOverlay_) : nullptr;
+
+    // 1. 現在ドラッグ中のフローティングウィンドウを探す。
+    // release されたフレームは UiWindowSystem (StateTransition 内でこちらより先に実行される)
+    // が titleBar の isPressed 解除を見て先に isDragging を false に戻してしまっているため、
+    // 直前フレームまで追跡していた activeDragWindow_ を release 判定にも使う。
+    EntityHandle draggingWindow{};
+    if (ComponentArray<UiWindow>* windowArray = GetComponentArray<UiWindow>()) {
+        for (auto& slot : windowArray->GetSlotsRef()) {
+            for (UiWindow& window : slot.components) {
+                if (window.isDragging && !window.IsDocked()) {
+                    draggingWindow = slot.owner;
+                    break;
+                }
+            }
+            if (draggingWindow.IsValid()) {
+                break;
+            }
+        }
+    }
+
+    if (draggingWindow.IsValid()) {
+        activeDragWindow_ = draggingWindow;
+    } else if (_released && activeDragWindow_.IsValid()) {
+        draggingWindow = activeDragWindow_; // release フレーム分の判定に使う。
+    } else {
+        activeDragWindow_ = {};
+    }
+
+    UiTransform* windowTransform = draggingWindow.IsValid() ? GetComponent<UiTransform>(draggingWindow) : nullptr;
+    if (!windowTransform) {
+        dropTarget_ = UiDockDropTarget{};
+        activeDragWindow_ = {};
+        if (overlayTransform) {
+            overlayTransform->visible = false;
+        }
+        return;
+    }
+
+    // v10 の「メインウィンドウの外へ 24px 出したら OS ウィンドウへ切り離す」判定は
+    // UiWindowSystem (こちらより先に実行される) が既に見ている。切り離しが起きるフレームは
+    // そちらが isDragging を false に戻して detachRequested を立てるため、上の探索で
+    // draggingWindow が見つからなくなり、この関数はここまでで抜ける
+    // (= ドロップ先は出さない。優先順位 1. の実現)。
+
+    const int32_t surfaceId = windowTransform->resolvedSurfaceId;
+
+    // v16 改: ドロップ先の判定には「カーソル 1 点」を使う。
+    // 最初はドラッグ中のウィンドウのタイトルバー矩形と相手の帯との重なり面積で判定していたが、
+    // タイトルバーは幅が数百 px あるため、カーソルがまるで別の場所にあっても端がかすっただけで
+    // 判定が出てしまい、「縁の判定がやたら大きい」という操作感になった。
+    // カーソル 1 点なら、狙った場所だけが素直に反応する。
+    Scene* scene       = GetScene();
+    MouseInput* mouse  = scene ? scene->GetMouseInput() : nullptr;
+    const Vec2f cursor = surfaceProvider_
+                             ? surfaceProvider_->GetSurfaceCursorPos(surfaceId)
+                             : (mouse ? mouse->GetPosition() : Vec2f{-1.0f, -1.0f});
+
+    auto contains = [](const Vec2f& _min, const Vec2f& _max, const Vec2f& _p) {
+        return _p[X] >= _min[X] && _p[X] < _max[X] && _p[Y] >= _min[Y] && _p[Y] < _max[Y];
+    };
+
+    // 2. カーソルを含む葉ノードを 1 つ見つけ、その中のどこを指しているかで区画を決める。
+    // 葉ノード同士は重ならないので、最初に見つかったものがそのまま答えになる。
+    //   タブバーの上 … タブとして結合 (Center)
+    //   内容領域の縁 … その辺へ分割 (一番近い辺を採る)
+    //   それ以外     … ドロップ先なし (中央を素通りしても何も出ない)
+    EntityHandle hitLeaf{};
+    UiDockNode* hitNode = nullptr;
+    UiDockDropZone zone = UiDockDropZone::None;
+
+    for (const EntityHandle& entity : entities_) {
+        UiDockNode* node       = GetComponent<UiDockNode>(entity);
+        UiTransform* transform = GetComponent<UiTransform>(entity);
+        if (!node || !transform || node->split != UiDockSplit::None) {
+            continue;
+        }
+        if (transform->resolvedSurfaceId != surfaceId || !transform->resolvedVisible) {
+            continue;
+        }
+
+        UiTransform* tabBarTransform  = GetComponent<UiTransform>(node->tabBar);
+        UiTransform* contentTransform = GetComponent<UiTransform>(node->contentArea);
+
+        // タブ結合を先に見る (タブバーと内容領域は重ならないので、実際には排他)。
+        if (tabBarTransform && contains(tabBarTransform->resolvedMin, tabBarTransform->resolvedMax, cursor)) {
+            hitLeaf = entity;
+            hitNode = node;
+            zone    = UiDockDropZone::Center;
+            break;
+        }
+
+        if (contentTransform && contains(contentTransform->resolvedMin, contentTransform->resolvedMax, cursor)) {
+            const Vec2f contentMin = contentTransform->resolvedMin;
+            const Vec2f contentMax = contentTransform->resolvedMax;
+
+            const float toLeft   = cursor[X] - contentMin[X];
+            const float toRight  = contentMax[X] - cursor[X];
+            const float toTop    = cursor[Y] - contentMin[Y];
+            const float toBottom = contentMax[Y] - cursor[Y];
+
+            float nearest              = toLeft;
+            UiDockDropZone nearestZone = UiDockDropZone::Left;
+            if (toRight < nearest) {
+                nearest     = toRight;
+                nearestZone = UiDockDropZone::Right;
+            }
+            if (toTop < nearest) {
+                nearest     = toTop;
+                nearestZone = UiDockDropZone::Top;
+            }
+            if (toBottom < nearest) {
+                nearest     = toBottom;
+                nearestZone = UiDockDropZone::Bottom;
+            }
+
+            // どの辺からも kUiDockSplitBand より離れていれば中央 = ドロップ先なし。
+            if (nearest <= kUiDockSplitBand) {
+                hitLeaf = entity;
+                hitNode = node;
+                zone    = nearestZone;
+            }
+            break; // カーソルを含む葉ノードは 1 つだけ。中央だった場合もここで確定。
+        }
+    }
+
+    if (!hitLeaf.IsValid() || !hitNode) {
+        dropTarget_ = UiDockDropTarget{};
+        if (overlayTransform) {
+            overlayTransform->visible = false;
+        }
+        if (_released) {
+            activeDragWindow_ = {}; // このフレームで確定 (ドロップ無し。その場に浮いたまま)。
+        }
+        return;
+    }
+
+    dropTarget_.leaf = hitLeaf;
+    dropTarget_.zone = zone;
+
+    // 3. オーバーレイの矩形を「実際にそこへ落とした結果占める領域」に合わせる。
+    if (overlayTransform) {
+        Vec2f overlayMin{};
+        Vec2f overlayMax{};
+
+        if (zone == UiDockDropZone::Center) {
+            // v16: 「ここに並ぶ」ことが分かるよう、ペイン全体ではなく相手のタブバーを示す。
+            if (UiTransform* tabBarTransform = GetComponent<UiTransform>(hitNode->tabBar)) {
+                overlayMin = tabBarTransform->resolvedMin;
+                overlayMax = tabBarTransform->resolvedMax;
+            }
+        } else if (UiTransform* hitTransform = GetComponent<UiTransform>(hitLeaf)) {
+            // 葉ノード (タブバーを含む矩形全体) を既定の比率 0.5 で割った側の領域。
+            overlayMin             = hitTransform->resolvedMin;
+            overlayMax             = hitTransform->resolvedMax;
+            const float halfW = (hitTransform->resolvedMax[X] - hitTransform->resolvedMin[X]) * 0.5f;
+            const float halfH = (hitTransform->resolvedMax[Y] - hitTransform->resolvedMin[Y]) * 0.5f;
+            switch (zone) {
+            case UiDockDropZone::Left:
+                overlayMax[X] = hitTransform->resolvedMin[X] + halfW;
+                break;
+            case UiDockDropZone::Right:
+                overlayMin[X] = hitTransform->resolvedMax[X] - halfW;
+                break;
+            case UiDockDropZone::Top:
+                overlayMax[Y] = hitTransform->resolvedMin[Y] + halfH;
+                break;
+            case UiDockDropZone::Bottom:
+                overlayMin[Y] = hitTransform->resolvedMax[Y] - halfH;
+                break;
+            default:
+                break;
+            }
+        }
+
+        overlayTransform->surfaceId = surfaceId;
+        overlayTransform->offsetMin = overlayMin;
+        overlayTransform->offsetMax = overlayMax;
+        overlayTransform->visible   = true; // ここに来た時点で zone は None ではない。
+    }
+
+    // 4. 離されたらドック要求を積む。
+    if (_released) {
+        dockRequests_.push_back(UiDockRequest{draggingWindow, hitLeaf, zone});
+        activeDragWindow_ = {}; // 消費したので追跡終了。
+        if (overlayTransform) {
+            overlayTransform->visible = false; // ドロップ後はオーバーレイを消す。
+        }
+    }
+}
+
+std::vector<UiDockRequest> UiDockSystem::TakeDockRequests() {
+    std::vector<UiDockRequest> taken;
+    taken.swap(dockRequests_);
+    return taken;
+}
+
+std::vector<UiDockTearOffRequest> UiDockSystem::TakeTearOffRequests() {
+    std::vector<UiDockTearOffRequest> taken;
+    taken.swap(tearOffRequests_);
+    return taken;
 }
 
 void UiDockSystem::RebuildTabButtons(UiDockNode& _node) {

@@ -79,6 +79,17 @@ private:
     /// このフレームで閉じられたサーフェスに対応する UI ウィンドウを、メインウィンドウへ戻す。
     void HandleClosedSurfaces();
 
+    // --- v15: ドラッグ&ドロップによるドッキング ---
+
+    /// 前フレームまでに UiDockSystem が積んだタブの引き剥がし要求を処理する
+    /// (実際の UndockUiWindow の呼び出しと isDragging/dragGrabOffset の設定)。
+    /// scene_->Update() より前に呼ぶこと (detach 要求と同じ理由)。
+    void HandlePendingTearOffRequests();
+    /// 前フレームまでに UiDockSystem が積んだドック要求を処理する
+    /// (実際の DockUiWindow / SplitUiDockNode の呼び出し)。
+    /// scene_->Update() より前に呼ぶこと (detach 要求と同じ理由)。
+    void HandlePendingDockRequests();
+
     std::unique_ptr<OriGine::SceneManager>    sceneManager_ = nullptr;
     std::unique_ptr<LogGuide::SessionCatalog> catalog_      = nullptr;
     std::unique_ptr<OriGine::Scene>           scene_        = nullptr; // ECS 上の自作 UI (ウィンドウ) を描画するためのシーン

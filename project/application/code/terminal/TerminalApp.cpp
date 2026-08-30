@@ -45,8 +45,12 @@
 #include "ui/system/UiWindowSystem.h"
 /// UI（v12: 縦スクロールビューのホイール/つまみドラッグ）
 #include "ui/system/UiScrollSystem.h"
-/// UI（v14: ドックツリーとタブ）
+/// UI（v14: ドックツリーとタブ。v15: ドラッグ&ドロップによるドッキングもここに乗る）
 #include "ui/system/UiDockSystem.h"
+/// UI（v15: DockUiWindow/SplitUiDockNode/UndockUiWindow/CreateUiDockDropOverlay を
+/// アプリ側から呼ぶ。UiDockNode::childA/childB を読むため UiDockNode.h も要る）
+#include "ui/UiDockBuilder.h"
+#include "ui/component/UiDockNode.h"
 
 /// UI（v2: テキストのコンポーネントは engine の TextComponent をそのまま使う。
 /// v5: 描画はクリップ矩形付きで描ける自作の UiTextRenderSystem に乗り換えた。
@@ -158,6 +162,10 @@ void TerminalApp::Initialize(const std::vector<std::string>& _commandLines) {
         uiWindowRoots_.push_back(root); // v10: 切り離し/再結合の対象として覚えておく (デモ用も同様に扱う)
     }
 
+    // --- v15: ドロップ先を示す半透明矩形 (1 つだけ作って使い回す。UiDockSystem に注入する) ---
+    const EntityHandle dockDropOverlay = LogGuide::CreateUiDockDropOverlay(scene_.get(), runner);
+    runner->GetSystem<LogGuide::UiDockSystem>()->SetDropOverlay(dockDropOverlay);
+
     // ウィンドウの縁をドラッグしている間、Win32 は DefWindowProc の中で独自のループを回すため
     // Run() のループが止まり、1 フレームも描画されなくなる。
     // エンジンに 1 フレーム分の処理を渡しておくと、ドラッグ中も追従して描画される。
@@ -214,6 +222,12 @@ void TerminalApp::Frame() {
     // v10: 切り離したウィンドウが実際に閉じられる直前のスクリーン矩形を控えておく
     // (nativeWindows_->BeginFrame() がこの直後に破棄してしまうため、それより前に行う必要がある)。
     CapturePendingReattachRects();
+
+    // v15: 前フレームで立ったタブの引き剥がし/ドロップ要求を処理する。
+    // detachRequested と同じ理由で scene_->Update() より前に行う (このフレームの
+    // UiLayoutSystem が新しいドック配置/フローティング位置で矩形を解決できるようにするため)。
+    HandlePendingTearOffRequests();
+    HandlePendingDockRequests();
 
     // v9: 追加の OS ウィンドウのリサイズ処理と、閉じられたウィンドウの破棄。
     // engine_ の BeginFrame とスワップチェーンのリサイズ判定の位置を揃えるため、ここで呼ぶ。
@@ -464,5 +478,118 @@ void TerminalApp::HandleClosedSurfaces() {
                 scene_->GetSystemRunnerRef()->GetSystem<LogGuide::UiWindowSystem>()) {
             windowSystem->BringWindowToFront(root);
         }
+    }
+}
+
+/// <summary>
+/// 前フレームまでに UiDockSystem が積んだタブの引き剥がし要求を処理する.
+/// 実際の UndockUiWindow の呼び出しと isDragging/dragGrabOffset の設定 (掴んだままドラッグへ
+/// 引き継ぐための後始末) はここで行う (UiDockSystem は要求を積むだけ。v10 の切り離しと同じ分担)。
+/// </summary>
+void TerminalApp::HandlePendingTearOffRequests() {
+    LogGuide::UiDockSystem* dockSystem = scene_->GetSystemRunnerRef()->GetSystem<LogGuide::UiDockSystem>();
+    if (!dockSystem) {
+        return;
+    }
+
+    for (const LogGuide::UiDockTearOffRequest& request : dockSystem->TakeTearOffRequests()) {
+        LogGuide::UiWindow* window = scene_->GetComponent<LogGuide::UiWindow>(request.window);
+        if (!window) {
+            continue;
+        }
+
+        LogGuide::UndockUiWindow(scene_.get(), request.window, request.position, window->floatingSize);
+
+        // そのままタイトルバーのドラッグ状態へ引き継ぐ (UiWindowSystem 側の対応は v15 で追加済み)。
+        window->isDragging     = true;
+        window->dragGrabOffset = request.grabOffset;
+
+        // ドック中は重なり順 (order/renderPriority) を触らない (UiDockSystem 参照) ため、
+        // フローティングに戻した直後に前面へ出す (v10 の再結合/F4 と同じ後始末)。
+        if (LogGuide::UiWindowSystem* windowSystem =
+                scene_->GetSystemRunnerRef()->GetSystem<LogGuide::UiWindowSystem>()) {
+            windowSystem->BringWindowToFront(request.window);
+        }
+    }
+}
+
+/// <summary>
+/// 前フレームまでに UiDockSystem が積んだドック要求を処理する.
+/// 実際の DockUiWindow / SplitUiDockNode の呼び出しはここで行う (UiDockSystem は要求を
+/// 積むだけ。v10 の切り離しと同じ分担)。
+/// </summary>
+void TerminalApp::HandlePendingDockRequests() {
+    LogGuide::UiDockSystem* dockSystem = scene_->GetSystemRunnerRef()->GetSystem<LogGuide::UiDockSystem>();
+    if (!dockSystem) {
+        return;
+    }
+    SystemRunner* runner = scene_->GetSystemRunnerRef();
+
+    for (const LogGuide::UiDockRequest& request : dockSystem->TakeDockRequests()) {
+        // 積まれてから 1 フレーム遅れて処理するため、対象が念のためまだ有効か確認する。
+        LogGuide::UiDockNode* leafNode = scene_->GetComponent<LogGuide::UiDockNode>(request.leaf);
+        LogGuide::UiWindow* window     = scene_->GetComponent<LogGuide::UiWindow>(request.window);
+        if (!leafNode || !window || leafNode->split != LogGuide::UiDockSplit::None) {
+            continue;
+        }
+
+        switch (request.zone) {
+        case LogGuide::UiDockDropZone::Center:
+            LogGuide::DockUiWindow(scene_.get(), request.window, request.leaf);
+            break;
+
+        case LogGuide::UiDockDropZone::Left:
+        case LogGuide::UiDockDropZone::Top: {
+            // SplitUiDockNode が返す新しい空の葉 (childA。ratio 側 = 左/上) へそのまま入れればよい。
+            const LogGuide::UiDockSplit dir = (request.zone == LogGuide::UiDockDropZone::Left)
+                ? LogGuide::UiDockSplit::Horizontal
+                : LogGuide::UiDockSplit::Vertical;
+            const EntityHandle newLeaf = LogGuide::SplitUiDockNode(scene_.get(), runner, request.leaf, dir, 0.5f);
+            if (newLeaf.IsValid()) {
+                LogGuide::DockUiWindow(scene_.get(), request.window, newLeaf);
+            }
+            break;
+        }
+
+        case LogGuide::UiDockDropZone::Right:
+        case LogGuide::UiDockDropZone::Bottom: {
+            // SplitUiDockNode の新しい空の葉 (childA) は必ず ratio 側 (左/上) に来るため、
+            // そのまま入れると意図と逆 (左/上) になってしまう。右/下に入れたいのは元々の中身
+            // (childB へ残る) の方なので、いったんドラッグ中のウィンドウを childB へ足してから、
+            // 元からいたウィンドウだけを新しい葉 (childA、左/上) へ移し替える。
+            // こうすると childB (右/下) にはドラッグしたウィンドウ 1 枚だけが残る。
+            const LogGuide::UiDockSplit dir = (request.zone == LogGuide::UiDockDropZone::Right)
+                ? LogGuide::UiDockSplit::Horizontal
+                : LogGuide::UiDockSplit::Vertical;
+            const EntityHandle newLeaf = LogGuide::SplitUiDockNode(scene_.get(), runner, request.leaf, dir, 0.5f);
+            LogGuide::UiDockNode* splitNode = scene_->GetComponent<LogGuide::UiDockNode>(request.leaf);
+            const EntityHandle oldContentLeaf = splitNode ? splitNode->childB : EntityHandle{};
+            if (newLeaf.IsValid() && oldContentLeaf.IsValid()) {
+                LogGuide::DockUiWindow(scene_.get(), request.window, oldContentLeaf);
+
+                if (LogGuide::UiDockNode* oldContentNode = scene_->GetComponent<LogGuide::UiDockNode>(oldContentLeaf)) {
+                    // 移動中に windows を書き換えるため、対象を先にコピーしておく。
+                    std::vector<EntityHandle> windowsToMove;
+                    windowsToMove.reserve(oldContentNode->windows.size());
+                    for (const EntityHandle& w : oldContentNode->windows) {
+                        if (w != request.window) {
+                            windowsToMove.push_back(w);
+                        }
+                    }
+                    for (const EntityHandle& w : windowsToMove) {
+                        LogGuide::DockUiWindow(scene_.get(), w, newLeaf);
+                    }
+                }
+            }
+            break;
+        }
+
+        case LogGuide::UiDockDropZone::None:
+        default:
+            break;
+        }
+
+        // ドックが完了したらドラッグ状態を終わらせておく (念のため。通常は release 済み)。
+        window->isDragging = false;
     }
 }

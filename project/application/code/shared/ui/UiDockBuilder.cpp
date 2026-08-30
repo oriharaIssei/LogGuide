@@ -255,6 +255,10 @@ EntityHandle CreateUiDockSpace(Scene* _scene, SystemRunner* _runner, int32_t _su
     EntityHandle root = CreateLeafNodeEntity(_scene, _runner, EntityHandle{});
     if (UiTransform* transform = _scene->GetComponent<UiTransform>(root)) {
         transform->surfaceId = _surfaceId;
+        // ドックツリー全体をフローティングウィンドウより奥の帯へ落とす (kUiDockSpacePriority 参照)。
+        // 子孫は resolvedPriority = 親の値 + 自分の renderPriority で解決されるので、
+        // ここ 1 箇所で木ごとまとめて下げられる。
+        transform->renderPriority = kUiDockSpacePriority;
     }
     return root;
 }
@@ -342,6 +346,17 @@ void DockUiWindow(Scene* _scene, const EntityHandle& _window, const EntityHandle
         return; // 葉ノードでない、あるいはウィンドウ側の部品が欠けているなら何もしない。
     }
 
+    // v15: フローティングからドックへ移る瞬間の矩形を、アンドック (タブの引き剥がし含む) で
+    // 戻すためのサイズとして控えておく。既にドックされているウィンドウを別の葉ノードへ
+    // 移すだけのとき (タブの並び替え相当) は、現在の矩形はドック用に全ストレッチされているので
+    // 上書きしない。
+    if (!window->IsDocked()) {
+        if (UiTransform* windowTransform = _scene->GetComponent<UiTransform>(_window)) {
+            window->floatingSize = {windowTransform->offsetMax[X] - windowTransform->offsetMin[X],
+                                     windowTransform->offsetMax[Y] - windowTransform->offsetMin[Y]};
+        }
+    }
+
     // 既に他の葉ノードに入っていたら、まずそちらから抜く (ノード間の移動に対応する)。
     if (window->dockNode.IsValid() && window->dockNode != _leafNode) {
         RemoveWindowFromLeaf(_scene, window->dockNode, _window);
@@ -383,6 +398,38 @@ void UndockUiWindow(Scene* _scene, const EntityHandle& _window, const Vec2f& _po
     windowTransform->anchorMax = {0.0f, 0.0f};
     windowTransform->offsetMin = _position;
     windowTransform->offsetMax = {_position[X] + _size[X], _position[Y] + _size[Y]};
+
+    // v16: UiDockSystem::UpdateLeafNode() はドック中、非アクティブなタブの windowTransform->visible
+    // を毎フレーム false にし続けている (i == activeTab のものだけ true にする)。ここで明示的に
+    // true へ戻さないと、非アクティブなタブを引き剥がしたときに visible = false のままフローティング
+    // へ戻り、ウィンドウが丸ごと不可視になってしまう (v14 で可視性が子へ階層伝播するようになった
+    // ため、中身もろとも消える)。
+    windowTransform->visible = true;
+}
+
+EntityHandle CreateUiDockDropOverlay(Scene* _scene, SystemRunner* _runner) {
+    EntityHandle overlay = _scene->CreateEntity("UiDockDropOverlay");
+    _scene->AddComponent<UiTransform>(overlay);
+    _scene->AddComponent<UiRect>(overlay);
+    // UiInteractable は意図的に付けない (ヒットテストを奪ってしまうため)。
+
+    if (UiTransform* transform = _scene->GetComponent<UiTransform>(overlay)) {
+        // 親なし (サーフェス直下) の点アンカー。位置/サイズは UiDockSystem が毎フレーム書き換える。
+        transform->anchorMin      = {0.0f, 0.0f};
+        transform->anchorMax      = {0.0f, 0.0f};
+        transform->offsetMin      = {0.0f, 0.0f};
+        transform->offsetMax      = {0.0f, 0.0f};
+        transform->visible        = false; // ドラッグ中だけ UiDockSystem が true にする。
+        transform->renderPriority = kUiDockOverlayPriority;
+    }
+    if (UiRect* rect = _scene->GetComponent<UiRect>(overlay)) {
+        rect->fillColor    = {0.35f, 0.55f, 0.85f, 0.35f};
+        rect->borderWidth  = 0.0f;
+        rect->cornerRadius = {0.0f, 0.0f, 0.0f, 0.0f};
+    }
+
+    _runner->RegisterEntity<UiLayoutSystem, UiRenderSystem>(overlay);
+    return overlay;
 }
 
 } // namespace LogGuide
